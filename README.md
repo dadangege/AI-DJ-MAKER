@@ -1,6 +1,43 @@
-# MiniMax TTS Radio Demo
+# Soul DJ / AI-DJ-MAKER
 
-一个轻量的 MiniMax 文字转语音示例，适合先做主播电台、播客旁白、资讯播报的 TTS 原型。
+一个运行在 Mac 本地的 AI 电台 / AI DJ 原型。它可以扫码登录网易云、读取歌单、播放本地队列，并在两首歌衔接处提前生成 AI 主播串场词和 TTS 口播，通过双轨播放实现基础 ducking、fade 与 crossfade。
+
+当前主版本是原生 SwiftUI App，不再依赖 Python 版 `Netease_url` 服务。网易云扫码登录、歌单读取、歌词读取和播放地址解析都已迁移到 Swift 内置实现。
+
+## 当前能力
+
+- 原生 SwiftUI 桌面界面：深色玻璃态 Soul DJ UI、左侧导航、AI 主播状态、底部播放器。
+- 网易云扫码登录：登录态保存在本机，不随分享包分发。
+- 歌单播放：支持播放/暂停、上一首/下一首、进度拖动、音量、顺序/循环/单曲循环/随机。
+- AI 串场：当前歌开始后提前生成“当前歌 -> 下一首”的串场文案和 TTS 音频。
+- 广播式衔接：根据 TTS 时长计算口播开始点，让口播尽量跨在两首歌边界附近。
+- 混音策略：口播时音乐自动 duck，结束后平滑恢复；切歌时下一首淡入。
+- OpenAI-compatible 配置：朋友使用时填写自己的 API Key、Base URL、文本模型和 TTS 模型。
+
+## 打包给别人测试
+
+构建并生成分享包：
+
+```bash
+npm run mac-app:build
+npm run share:package
+```
+
+生成文件：
+
+```text
+dist/SoulDJ-Share.zip
+```
+
+分享包只包含 `.app` 和 README，不包含 API Key、网易云 Cookie、音乐缓存、TTS 缓存、`.env`、Python 依赖或 Node 依赖。
+
+朋友第一次打开后需要：
+
+1. 在设置里填写自己的 OpenAI-compatible API 配置。
+2. 点击网易云扫码登录。
+3. 选择歌单，双击歌曲开始播放。
+
+> 当前构建是 Apple Silicon / arm64 版本，Intel Mac 可能无法运行。
 
 ## 调研结论
 
@@ -47,7 +84,7 @@ node src/minimax-tts.mjs --file examples/radio-script.txt --preset story --out o
 npm run tts -- --text "欢迎收听今晚的节目，我是你的声音朋友。" --out output/intro.mp3
 ```
 
-## macOS 试听 App
+## macOS App
 
 已经内置一个不用 Xcode 编译的轻量 macOS App：
 
@@ -71,11 +108,7 @@ macos/Soul DJ.app
 npm run share:package
 ```
 
-分享 `dist/SoulDJ-Share` 整个文件夹即可。朋友电脑需要有 Node.js 18+ 和 Python 3，并先运行：
-
-```bash
-npm run netease-url:setup
-```
+分享 `dist/SoulDJ-Share.zip` 即可。当前 Swift 主链路不再要求朋友安装 Python、Node 或运行额外依赖脚本。
 
 如果修改了原生壳代码，可以重新构建：
 
