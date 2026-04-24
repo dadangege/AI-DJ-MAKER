@@ -1,0 +1,20 @@
+{
+  "name": "minimax-tts-radio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "app": "node src/app-server.mjs --open",
+    "mac-app:build": "./script/build_mac_app.sh",
+    "share:package": "./script/package_share.sh",
+    "netease-url:setup": "./script/setup_netease_url.sh",
+    "mediaremote-adapter:setup": "./script/setup_mediaremote_adapter.sh",
+    "ai-dj:build-listener": "swiftc native/now-playing-listener/main.swift -framework Foundation -F /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/PrivateFrameworks -framework MediaRemote -o native/now-playing-listener/now-playing-listener",
+    "ai-dj": "node src/ai-dj/orchestrator.mjs",
+    "tts": "node src/minimax-tts.mjs",
+    "voices": "node src/list-voices.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MiniMax TTS Studio</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">MiniMax TTS Studio</p>
+        <h1>AI 电台 / TTS 试听台</h1>
+        <p class="lede">监听 Mac 系统正在播放的音乐，触发 AI DJ 口播；也可以手动输入文稿试听 MiniMax TTS。</p>
+      </section>
+
+      <section class="panel settings-panel">
+        <div class="panel-heading compact-heading">
+          <div>
+            <p class="eyebrow compact">OpenAI-Compatible API</p>
+            <h2>接口配置</h2>
+          </div>
+          <div class="actions">
+            <button id="saveSettings" class="primary">保存配置</button>
+          </div>
+        </div>
+
+        <div class="grid settings-grid">
+          <label class="field">
+            <span>API Key</span>
+            <input id="apiKey" type="password" autocomplete="off" placeholder="sk-..." />
+          </label>
+          <label class="field">
+            <span>Base URL</span>
+            <input id="baseUrl" placeholder="https://api.minimaxi.com/v1" />
+          </label>
+          <label class="field">
+            <span>文本模型</span>
+            <input id="textModel" placeholder="MiniMax-M2.7-highspeed" />
+          </label>
+          <label class="field">
+            <span>TTS 模型</span>
+            <input id="ttsModel" placeholder="speech-2.8-hd" />
+          </label>
+        </div>
+        <p id="settingsStatus" class="settings-status">正在读取本机配置...</p>
+      </section>
+
+      <section class="panel local-dj-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow compact">Local AI DJ</p>
+            <h2>自建播放器模式</h2>
+          </div>
+          <div class="actions">
+            <button id="localDjLogin" class="ghost">扫码登录网易云</button>
+            <button id="localDjRefreshPlaylists" class="ghost">刷新歌单</button>
+            <button id="localDjStartNetease" class="ghost">启动网易云服务</button>
+            <button id="localDjLoad" class="primary">加载歌单</button>
+            <button id="localDjPlay" class="primary">播放</button>
+            <button id="localDjPause" class="ghost">暂停</button>
+            <button id="localDjNext" class="ghost">下一首</button>
+          </div>
+        </div>
+
+        <div id="localDjLoginBox" class="qr-login-box">
+          <span>网易云扫码登录</span>
+          <div id="localDjQr" class="qr-code">点击“扫码登录网易云”生成二维码</div>
+          <p id="localDjLoginStatus">登录后会自动读取你的网易云歌单。</p>
+        </div>
+
+        <div class="grid local-dj-config">
+          <label class="field wide">
+            <span>选择歌单</span>
+            <select id="localDjPlaylistSelect">
+              <option value="">请先扫码登录并刷新歌单</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>音质</span>
+            <select id="localDjQuality">
+              <option value="standard">standard</option>
+              <option value="exhigh">exhigh</option>
+              <option value="lossless" selected>lossless</option>
+              <option value="hires">hires</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>缓存数量</span>
+            <input id="localDjLimit" type="number" min="1" max="20" value="3" />
+          </label>
+        </div>
+
+        <div class="dj-status-grid">
+          <div class="status-card">
+            <span>服务状态</span>
+            <strong id="localDjService">未启动</strong>
+          </div>
+          <div class="status-card">
+            <span>播放状态</span>
+            <strong id="localDjPlayback">idle</strong>
+          </div>
+          <div class="status-card">
+            <span>队列</span>
+            <strong id="localDjQueue">0 首</strong>
+          </div>
+          <div class="status-card">
+            <span>混音</span>
+            <strong id="localDjMix">idle</strong>
+          </div>
+        </div>
+
+        <div class="now-playing">
+          <div>
+            <span>当前 / 下一首</span>
+            <strong id="localDjTrack">等待加载网易云歌单...</strong>
+            <p id="localDjMeta">自建模式会自己播放音乐，因此不依赖系统 Now Playing。</p>
+          </div>
+          <div class="progress-wrap">
+            <div class="progress-bar">
+              <div id="localDjProgress" class="progress-fill"></div>
+            </div>
+            <p id="localDjProgressText">0s / ?</p>
+          </div>
+        </div>
+
+        <div class="dj-script">
+          <span>自建串场状态</span>
+          <p id="localDjTransition">还没有串场计划。</p>
+        </div>
+
+        <div class="dj-log">
+          <span>自建播放器日志</span>
+          <div id="localDjLogs" class="log-lines"></div>
+        </div>
+      </section>
+
+      <section class="panel ai-dj-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow compact">AI DJ Monitor</p>
+            <h2>系统监听模式</h2>
+          </div>
+          <div class="actions">
+            <button id="aiDjStart" class="primary">启动 AI DJ</button>
+            <button id="aiDjStop" class="ghost">停止</button>
+            <button id="aiDjRefresh" class="ghost">刷新状态</button>
+            <button id="aiDjTest" class="ghost">立即测试口播</button>
+          </div>
+        </div>
+
+        <div class="dj-status-grid">
+          <div class="status-card">
+            <span>监听状态</span>
+            <strong id="aiDjRunning">未启动</strong>
+          </div>
+          <div class="status-card">
+            <span>播放状态</span>
+            <strong id="aiDjPlayback">unknown</strong>
+          </div>
+          <div class="status-card">
+            <span>数据来源</span>
+            <strong id="aiDjSource">未知</strong>
+          </div>
+          <div class="status-card">
+            <span>当前阶段</span>
+            <strong id="aiDjPhase">idle</strong>
+          </div>
+          <div class="status-card">
+            <span>下一阶段</span>
+            <strong id="aiDjNext">--</strong>
+          </div>
+          <div class="status-card">
+            <span>缓存状态</span>
+            <strong id="aiDjCache">文案 0/0 · 音频 0/0 · 已播 0/0</strong>
+          </div>
+          <div class="status-card">
+            <span>音乐混音</span>
+            <strong id="aiDjDucking">idle</strong>
+          </div>
+          <div class="status-card">
+            <span>TTS 状态</span>
+            <strong id="aiDjSpeaking">idle</strong>
+          </div>
+        </div>
+
+        <div class="now-playing">
+          <div>
+            <span>当前歌曲</span>
+            <strong id="aiDjTrack">等待系统 Now Playing...</strong>
+            <p id="aiDjMeta">打开任意支持系统播放状态的音乐 App 后点击“启动 AI DJ”。</p>
+          </div>
+          <div class="progress-wrap">
+            <div class="progress-bar">
+              <div id="aiDjProgress" class="progress-fill"></div>
+            </div>
+            <p id="aiDjProgressText">0s / ?</p>
+          </div>
+        </div>
+
+        <div class="dj-script">
+          <span>最后一次 DJ 文案</span>
+          <p id="aiDjScript">还没有触发口播。</p>
+        </div>
+
+        <div class="dj-log">
+          <span>运行日志</span>
+          <div id="aiDjLogs" class="log-lines"></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <label class="field wide">
+          <span>文稿</span>
+          <textarea id="text" rows="10">今晚的节目，我们想从一个问题开始：如果时间可以被听见，它会是什么声音？
+<#0.8#>
+也许，是凌晨街角第一辆车驶过的风声。
+(breath)
+也许，是你在某个深夜，终于决定重新开始时，那一秒钟的安静。</textarea>
+        </label>
+
+        <div class="grid">
+          <label class="field">
+            <span>预设</span>
+            <select id="preset">
+              <option value="radio">radio 电台</option>
+              <option value="story">story 深夜故事</option>
+              <option value="news">news 资讯</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span>模型</span>
+            <select id="model">
+              <option value="speech-2.8-hd">speech-2.8-hd 高质量</option>
+              <option value="speech-2.8-turbo">speech-2.8-turbo 更快</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span>格式</span>
+            <select id="format">
+              <option value="mp3">mp3</option>
+              <option value="wav">wav</option>
+              <option value="flac">flac</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="voice-panel">
+          <div class="group-tabs" id="voiceGroup"></div>
+
+          <label class="field wide">
+            <span>筛选中文音色</span>
+            <input id="voiceSearch" placeholder="输入音色名称或 Voice ID，例如 新闻 / Anchor / News" />
+          </label>
+
+          <div class="voice-list-wrap">
+            <div class="voice-list-title">中文音色列表</div>
+            <div id="voiceList" class="voice-list" role="listbox" aria-label="中文音色列表"></div>
+          </div>
+
+          <p class="voice-meta" id="voiceMeta">正在加载中文音色...</p>
+        </div>
+
+        <div class="sliders">
+          <label>
+            <span>语速 <b id="speedValue">0.86</b></span>
+            <input id="speed" type="range" min="0.5" max="1.5" step="0.01" value="0.86" />
+          </label>
+          <label>
+            <span>音高 <b id="pitchValue">-2</b></span>
+            <input id="pitch" type="range" min="-6" max="6" step="1" value="-2" />
+          </label>
+          <label>
+            <span>音量 <b id="volValue">2</b></span>
+            <input id="vol" type="range" min="0.2" max="2" step="0.1" value="2" />
+          </label>
+        </div>
+
+        <div class="actions">
+          <button id="synthesize" class="primary">合成试听</button>
+          <button id="stopServer" class="ghost">退出本地服务</button>
+          <p id="status" role="status">准备好了。</p>
+        </div>
+
+        <audio id="player" controls></audio>
+      </section>
+
+      <aside class="tips">
+        <h2>语气控制速记</h2>
+        <p>可以用停顿和语气标签做“情绪表演”，例如 <code>&lt;#0.8#&gt;</code>、<code>(breath)</code>、<code>(laughs)</code>、<code>(sighs)</code>。真实效果取决于模型、音色和文稿写法。</p>
+      </aside>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

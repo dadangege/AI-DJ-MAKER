@@ -1,0 +1,33 @@
+.env
+*.local
+.DS_Store
+
+# Runtime output and generated media
+output/
+*.mp3
+*.wav
+*.flac
+*.m4a
+*.aac
+
+# Build/package artifacts
+dist/
+macos/
+*.app
+*.zip
+native/now-playing-listener/now-playing-listener
+
+# Third-party local checkouts and dependency installs
+vendor/
+node_modules/
+.venv/
+
+# Local user state
+settings.json
+*cookie*
+music-cache/
+tts-cache/
+
+# Local-only project notes / imported design references
+HANDOFF_AI_DJ.md
+stitch_soul_dj_ai_music_player/
