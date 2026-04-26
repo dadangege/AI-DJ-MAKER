@@ -24,8 +24,10 @@ final class LocalAudioEngine {
     private var musicVolume: Float = 1
     private var userMusicVolume: Float = 1
     private var playbackGeneration = 0
+    private var fadeGeneration = 0
     private var streaming = false
     var onMusicFinished: (([String: Any]) -> Void)?
+    var onSpectrumLevels: (([Float]) -> Void)?
 
     init() {
         engine.attach(musicNode)
@@ -35,6 +37,7 @@ final class LocalAudioEngine {
         engine.connect(ttsNode, to: engine.mainMixerNode, format: format)
         musicNode.volume = musicVolume
         ttsNode.volume = 1.08
+        installSpectrumTap()
         try? engine.start()
     }
 
@@ -215,17 +218,27 @@ final class LocalAudioEngine {
             try ensureEngine()
             let file = try AVAudioFile(forReading: URL(fileURLWithPath: path))
             ttsNode.stop()
-            ttsNode.volume = max(0.1, ttsGain)
+            ttsNode.volume = min(2.0, max(0.1, ttsGain))
             ttsPlaying = true
             let restoreVolume = userMusicVolume
-            fadeMusicLocked(to: min(clamp(duckVolume), restoreVolume), fadeMs: fadeMs)
+            if musicVolume > min(clamp(duckVolume), restoreVolume) + 0.02 {
+                fadeMusicLockedAsync(to: min(clamp(duckVolume), restoreVolume), fadeMs: fadeMs)
+            }
             ttsNode.scheduleFile(file, at: nil) { [weak self] in
                 self?.queue.async {
                     self?.ttsPlaying = false
-                    self?.fadeMusicLocked(to: restoreVolume, fadeMs: fadeMs)
+                    self?.fadeMusicLockedAsync(to: restoreVolume, fadeMs: fadeMs)
                 }
             }
             ttsNode.play()
+            return statusLocked()
+        }
+    }
+
+    func duckMusic(duckVolume: Float, fadeMs: Int) -> [String: Any] {
+        queue.sync {
+            let target = min(clamp(duckVolume), userMusicVolume)
+            fadeMusicLockedAsync(to: target, fadeMs: fadeMs)
             return statusLocked()
         }
     }
@@ -346,6 +359,42 @@ final class LocalAudioEngine {
         }
     }
 
+    private func installSpectrumTap() {
+        let mixer = engine.mainMixerNode
+        let format = mixer.outputFormat(forBus: 0)
+        mixer.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+            guard let self, let channel = buffer.floatChannelData?[0] else { return }
+            let frameCount = Int(buffer.frameLength)
+            guard frameCount > 0 else { return }
+
+            let barCount = 36
+            let framesPerBar = max(1, frameCount / barCount)
+            var levels: [Float] = []
+            levels.reserveCapacity(barCount)
+
+            for index in 0..<barCount {
+                let start = min(frameCount - 1, index * framesPerBar)
+                let end = index == barCount - 1 ? frameCount : min(frameCount, start + framesPerBar)
+                guard end > start else {
+                    levels.append(0)
+                    continue
+                }
+
+                var sum: Float = 0
+                for sampleIndex in start..<end {
+                    sum += abs(channel[sampleIndex])
+                }
+                let average = sum / Float(end - start)
+                let shaped = pow(min(1, average * 7.5), 0.62)
+                levels.append(shaped)
+            }
+
+            DispatchQueue.main.async {
+                self.onSpectrumLevels?(levels)
+            }
+        }
+    }
+
     private func elapsedLocked() -> Double {
         if streaming, let streamPlayer {
             let seconds = streamPlayer.currentTime().seconds
@@ -368,7 +417,8 @@ final class LocalAudioEngine {
             "track": currentTrack,
             "elapsed": elapsedLocked(),
             "duration": duration,
-            "musicVolume": userMusicVolume,
+            "musicVolume": musicVolume,
+            "userMusicVolume": userMusicVolume,
             "streamRate": streamPlayer?.rate ?? 0,
             "streamStatus": streamStatusLocked(streamPlayer),
             "streamError": streamPlayer?.currentItem?.error?.localizedDescription ?? "",
@@ -399,6 +449,30 @@ final class LocalAudioEngine {
             streamPlayer?.volume = next
             musicVolume = next
             usleep(useconds_t(delay))
+        }
+    }
+
+    private func fadeMusicLockedAsync(to target: Float, fadeMs: Int) {
+        let from = streaming ? (streamPlayer?.volume ?? musicVolume) : musicNode.volume
+        let target = clamp(target)
+        let steps = max(1, min(72, fadeMs / 28))
+        let delay = max(10_000, fadeMs * 1000 / max(1, steps))
+        fadeGeneration += 1
+        let generation = fadeGeneration
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            for index in 1...steps {
+                let progress = Float(index) / Float(steps)
+                let next = from + ((target - from) * progress)
+                self.queue.async {
+                    guard self.fadeGeneration == generation else { return }
+                    self.musicNode.volume = next
+                    self.streamPlayer?.volume = next
+                    self.musicVolume = next
+                }
+                usleep(useconds_t(delay))
+            }
         }
     }
 

@@ -4,18 +4,20 @@ import Foundation
 final class SoulDJStore: ObservableObject {
     @Published var selectedRoute: SoulRoute = .library
     @Published var showLoginSheet = false
+    @Published var showHostPicker = false
     @Published var qrLogin = QRLoginState()
     @Published var installProgress = InstallProgressState()
     @Published var account: NeteaseAccount = .guest
     @Published var playlists: [NeteasePlaylist] = []
+    @Published var publicPlaylists: [NeteasePlaylist] = []
     @Published var selectedPlaylist: NeteasePlaylist?
     @Published var selectedTracks: [SoulTrack] = []
     @Published var trackPage = 0
     @Published var loadingTracks = false
     @Published var currentTrack: SoulTrack = .placeholder
     @Published var nextTrack: SoulTrack?
-    @Published var elapsed: Double = 192
-    @Published var duration: Double = 578
+    @Published var elapsed: Double = 0
+    @Published var duration: Double = 0
     @Published var isPlaying = false
     @Published var isPreparingPlayback = false
     @Published var preparingTrackID: String?
@@ -28,26 +30,39 @@ final class SoulDJStore: ObservableObject {
     @Published var aiDjStatusMessage = AiDjModelStatus.notConfigured.defaultMessage
     @Published var aiDjTransitionSummary = ""
     @Published var aiDjTesting = false
+    @Published var lyricLines: [TimedLyricLine] = []
+    @Published var lyricStatus = "播放歌曲后显示歌词"
+    @Published var spectrumLevels: [Float] = Array(repeating: 0, count: 36)
+    @Published var hostPreviewing = false
+    @Published var hostPickerMessage = ""
+    @Published var environmentContext: EnvironmentContext?
+    @Published var environmentStatus = ""
     @Published var logs: [DJLogEntry] = []
 
     let settings: AppSettingsStore
     private let netease: NeteaseService
     private let audioEngine: LocalAudioEngine
     private let miniMax: MiniMaxService
+    private let environment: EnvironmentContextService
     private var loginPollTask: Task<Void, Never>?
     private var progressPollTask: Task<Void, Never>?
     private var streamFallbackTask: Task<Void, Never>?
+    private var lyricTask: Task<Void, Never>?
     private var playbackRequestID: UUID?
     private var preparedTransition: PreparedTransition?
     private var transitionTask: Task<Void, Never>?
+    private var lastTimeAnnouncementAt: Date?
     private let defaults = UserDefaults.standard
     private let playbackQualities = ["exhigh", "standard", "lossless", "hires"]
+    private let publicPlaylistCategories = ["华语", "流行", "民谣", "摇滚", "电子", "轻音乐"]
+    private var publicPlaylistPage = 0
 
-    init(settings: AppSettingsStore, netease: NeteaseService, audioEngine: LocalAudioEngine, miniMax: MiniMaxService) {
+    init(settings: AppSettingsStore, netease: NeteaseService, audioEngine: LocalAudioEngine, miniMax: MiniMaxService, environment: EnvironmentContextService) {
         self.settings = settings
         self.netease = netease
         self.audioEngine = audioEngine
         self.miniMax = miniMax
+        self.environment = environment
         self.playbackMode = PlaybackMode(rawValue: defaults.string(forKey: Keys.playbackMode) ?? "") ?? .ordered
         self.volume = defaults.object(forKey: Keys.volume) as? Double ?? 0.82
         qrLogin.hasCookie = netease.hasCookie
@@ -55,6 +70,7 @@ final class SoulDJStore: ObservableObject {
         qrLogin.message = netease.hasCookie ? "已保存网易云登录态。" : "点击扫码登录网易云。"
         account = netease.loadCachedAccount()
         playlists = netease.loadCachedPlaylists()
+        publicPlaylists = netease.loadCachedPublicPlaylists()
         selectedPlaylist = playlists.first
         if let id = selectedPlaylist?.id {
             selectedTracks = netease.cachedPlaylistTracks(id: id)
@@ -63,10 +79,17 @@ final class SoulDJStore: ObservableObject {
         if netease.hasCookie {
             Task { await refreshPlaylists() }
         }
+        Task { await refreshPublicPlaylists() }
+        Task { await refreshEnvironmentContext() }
 
         audioEngine.onMusicFinished = { [weak self] _ in
             Task { @MainActor in
                 self?.handleMusicFinished()
+            }
+        }
+        audioEngine.onSpectrumLevels = { [weak self] levels in
+            Task { @MainActor in
+                self?.spectrumLevels = levels
             }
         }
         startProgressPolling()
@@ -112,6 +135,78 @@ final class SoulDJStore: ObservableObject {
 
     var isAiDjConnected: Bool {
         aiDjModelStatus == .connected
+    }
+
+    var currentHost: AIHostProfile {
+        settings.selectedHost
+    }
+
+    var configuredHost: AIHostProfile? {
+        settings.selectedHostOrNil
+    }
+
+    var hasSelectedHost: Bool {
+        settings.hasSelectedHost
+    }
+
+    var currentHostMode: AIHostMode {
+        settings.hostMode
+    }
+
+    var configuredHostMode: AIHostMode? {
+        settings.hostModeOrNil
+    }
+
+    func openHostPicker() {
+        hostPickerMessage = ""
+        showHostPicker = true
+    }
+
+    func closeHostPicker() {
+        showHostPicker = false
+    }
+
+    func saveHostSelection(host: AIHostProfile, mode: AIHostMode) {
+        settings.applyHost(host, mode: mode)
+        aiHostMessage = "\(host.name) 已上线，当前为\(mode.title)。"
+        hostPickerMessage = "已切换为 \(host.name) · \(mode.title)"
+        appendLog("info", "已切换 AI 主播：\(host.name) · \(mode.title)。")
+        showHostPicker = false
+        prepareAiDjTransitionIfNeeded(force: true)
+    }
+
+    func previewHost(host: AIHostProfile, mode: AIHostMode) {
+        guard hostPreviewing == false else { return }
+        hostPreviewing = true
+        hostPickerMessage = "正在生成试听..."
+        Task {
+            do {
+                let script = "\(host.name) 已经准备好了。\(mode.promptInstruction) 接下来，我会用这段声音，陪你把每一首歌自然接上。"
+                let cacheKey = "\(host.id)-\(mode.rawValue)-\(host.voiceID)-\(host.speed)-\(host.pitch)"
+                let speech = try await miniMax.synthesizeSpeech(
+                    script,
+                    voiceID: host.voiceID,
+                    speed: host.speed,
+                    pitch: host.pitch,
+                    cacheKey: cacheKey
+                )
+                await MainActor.run {
+                    self.hostPreviewing = false
+                    self.hostPickerMessage = "正在播放 \(host.name) 的试听。"
+                    do {
+                        _ = try self.audioEngine.playTTS(path: speech.path, duckVolume: 0.18, fadeMs: 3000, ttsGain: 1.45)
+                    } catch {
+                        self.hostPickerMessage = "试听播放失败：\(error.localizedDescription)"
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.hostPreviewing = false
+                    self.hostPickerMessage = "试听失败：\(error.localizedDescription)"
+                    self.appendLog("error", self.hostPickerMessage)
+                }
+            }
+        }
     }
 
     func openLogin() {
@@ -182,6 +277,43 @@ final class SoulDJStore: ObservableObject {
         }
     }
 
+    func refreshPublicPlaylists() async {
+        do {
+            publicPlaylists = try await netease.loadPublicPlaylists()
+            appendLog("info", "已读取公共歌单：\(publicPlaylists.count) 个。")
+        } catch {
+            appendLog("error", "公共歌单读取失败：\(error.localizedDescription)")
+        }
+    }
+
+    func refreshEnvironmentContext() async {
+        do {
+            environmentContext = try await environment.loadEnvironmentContext()
+            if let environmentContext {
+                environmentStatus = environmentContext.displayText
+                appendLog("info", "环境信息已读取：\(environmentContext.displayText)。")
+            }
+        } catch {
+            environmentContext = nil
+            environmentStatus = "环境信息不可用"
+            appendLog("info", "环境信息不可用，已跳过天气展示。")
+        }
+    }
+
+    func shufflePublicPlaylists() {
+        publicPlaylistPage += 1
+        let category = publicPlaylistCategories[publicPlaylistPage % publicPlaylistCategories.count]
+        let offset = (publicPlaylistPage / publicPlaylistCategories.count) * 8
+        Task {
+            do {
+                publicPlaylists = try await netease.loadPublicPlaylists(limit: 8, category: category, offset: offset)
+                appendLog("info", "已换一组公共歌单：\(category)。")
+            } catch {
+                appendLog("error", "公共歌单换一换失败：\(error.localizedDescription)")
+            }
+        }
+    }
+
     func saveSettings() {
         settings.save()
         appendLog("info", "OpenAI-compatible 配置已保存。")
@@ -203,6 +335,7 @@ final class SoulDJStore: ObservableObject {
         elapsed = 0
         duration = track.duration > 0 ? track.duration : duration
         isPlaying = false
+        loadLyrics(for: track)
         updateNextTrack()
         appendLog("info", "准备播放：\(track.artist) - \(track.title)。")
 
@@ -236,10 +369,9 @@ final class SoulDJStore: ObservableObject {
         let playableTrack = track.withLocalPath(audioURL.path)
         rememberLocalPath(for: playableTrack)
         do {
-            let status = try audioEngine.loadMusicStream(
-                url: audioURL,
+            let status = try audioEngine.loadMusic(
+                path: audioURL.path,
                 track: trackPayload(playableTrack),
-                duration: track.duration,
                 autoplay: true,
                 volume: Float(volume)
             )
@@ -364,7 +496,7 @@ final class SoulDJStore: ObservableObject {
                     self.appendLog("script", "测试口播文案（\(generated.source.logLabel)）：\(script)")
                     self.appendLog("tts", "测试口播音频已生成：\(URL(fileURLWithPath: audio.path).lastPathComponent)")
                     do {
-                        _ = try self.audioEngine.playTTS(path: audio.path, duckVolume: 0.28, fadeMs: 720, ttsGain: 1.08)
+                        _ = try self.audioEngine.playTTS(path: audio.path, duckVolume: 0.16, fadeMs: 3000, ttsGain: 1.45)
                     } catch {
                         self.appendLog("error", "测试口播播放失败：\(error.localizedDescription)")
                     }
@@ -474,6 +606,14 @@ final class SoulDJStore: ObservableObject {
         selectedRoute = .library
     }
 
+    func openPlayingPlaylist() {
+        guard let selectedPlaylist else { return }
+        selectedRoute = .playlists
+        if selectedTracks.isEmpty {
+            Task { await loadTracks(for: selectedPlaylist, preferCache: true) }
+        }
+    }
+
     func nextTrackPage() {
         trackPage = min(totalTrackPages - 1, trackPage + 1)
     }
@@ -496,12 +636,9 @@ final class SoulDJStore: ObservableObject {
                 if selectedPlaylist?.id == playlist.id {
                 selectedTracks = tracks
                 trackPage = min(trackPage, max(0, totalTrackPages - 1))
-                if let first = tracks.first {
-                    if currentTrack.id == SoulTrack.placeholder.id {
-                        currentTrack = first
-                        duration = first.duration > 0 ? first.duration : duration
-                    }
-                    nextTrack = tracks.dropFirst().first
+                if currentTrack.id == SoulTrack.placeholder.id {
+                    elapsed = 0
+                    duration = 0
                 }
                 updateNextTrack()
                 prepareAiDjTransitionIfNeeded(force: false)
@@ -638,9 +775,10 @@ final class SoulDJStore: ObservableObject {
                 let speech = try await self.miniMax.synthesizeSpeech(script)
                 let nextAudioURL = try await self.resolveBridgeAudioURL(for: next)
                 let ttsDuration = Double(speech.durationMs ?? 8000) / 1000
-                let fadeLead = 0.3
+                let duckLead = 1.5
                 let crossfadeOverlap = 1.8
-                let ttsStart = max(0, currentDuration - (ttsDuration / 2) - fadeLead)
+                let ttsStart = max(0, currentDuration - (ttsDuration / 2))
+                let duckStart = max(0, ttsStart - duckLead)
                 let nextStart = max(0, currentDuration - crossfadeOverlap)
                 await MainActor.run {
                     guard self.currentTrack.id == current.id, self.nextTrack?.id == next.id else { return }
@@ -662,9 +800,11 @@ final class SoulDJStore: ObservableObject {
                         script: script,
                         audioPath: speech.path,
                         nextAudioURL: nextAudioURL,
+                        duckStartSeconds: duckStart,
                         ttsStartSeconds: ttsStart,
                         nextStartSeconds: nextStart,
                         ttsDurationSeconds: ttsDuration,
+                        duckStarted: false,
                         ttsPlayed: false,
                         crossfadeStarted: false
                     )
@@ -692,7 +832,41 @@ final class SoulDJStore: ObservableObject {
         }
     }
 
+    private func loadLyrics(for track: SoulTrack) {
+        lyricTask?.cancel()
+        guard track.id != SoulTrack.placeholder.id else {
+            lyricLines = []
+            lyricStatus = "播放歌曲后显示歌词"
+            return
+        }
+
+        lyricLines = []
+        lyricStatus = "正在加载歌词..."
+        lyricTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let lines = try await self.netease.timedLyrics(for: track)
+                await MainActor.run {
+                    guard self.currentTrack.id == track.id else { return }
+                    self.lyricLines = lines
+                    self.lyricStatus = lines.isEmpty ? "这首歌暂无时间轴歌词" : ""
+                }
+            } catch {
+                await MainActor.run {
+                    guard self.currentTrack.id == track.id else { return }
+                    self.lyricLines = []
+                    self.lyricStatus = "歌词加载失败"
+                    self.appendLog("info", "歌词加载失败：\(track.title)。")
+                }
+            }
+        }
+    }
+
     private func beijingTimeAnnouncementIfNeeded(now: Date = Date()) -> String? {
+        if let lastTimeAnnouncementAt, now.timeIntervalSince(lastTimeAnnouncementAt) < 30 * 60 {
+            return nil
+        }
+
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
         let components = calendar.dateComponents([.hour, .minute], from: now)
@@ -703,10 +877,12 @@ final class SoulDJStore: ObservableObject {
         guard closeToHour || closeToHalf else { return nil }
 
         if closeToHalf {
+            lastTimeAnnouncementAt = now
             return "现在是北京时间 \(hour) 点半。"
         }
 
         let announcedHour = minute >= 57 ? (hour + 1) % 24 : hour
+        lastTimeAnnouncementAt = now
         return "现在是北京时间 \(announcedHour) 点。"
     }
 
@@ -714,13 +890,21 @@ final class SoulDJStore: ObservableObject {
         guard var transition = preparedTransition else { return }
         guard isPlaying, currentTrack.id == transition.from.id else { return }
 
+        if transition.duckStarted == false, elapsed >= transition.duckStartSeconds {
+            transition.duckStarted = true
+            preparedTransition = transition
+            aiDjTransitionSummary = "\(transition.from.title) -> \(transition.to.title) · 音乐推低中"
+            appendLog("info", "提前推低背景音乐：\(transition.from.title) -> \(transition.to.title)")
+            _ = audioEngine.duckMusic(duckVolume: 0.14, fadeMs: 3000)
+        }
+
         if transition.ttsPlayed == false, elapsed >= transition.ttsStartSeconds {
             transition.ttsPlayed = true
             preparedTransition = transition
             aiDjTransitionSummary = "\(transition.from.title) -> \(transition.to.title) · 口播中"
             appendLog("info", "开始播放串场：\(transition.from.title) -> \(transition.to.title)")
             do {
-                _ = try audioEngine.playTTS(path: transition.audioPath, duckVolume: 0.28, fadeMs: 720, ttsGain: 1.08)
+                _ = try audioEngine.playTTS(path: transition.audioPath, duckVolume: 0.14, fadeMs: 3000, ttsGain: 1.55)
             } catch {
                 aiDjTransitionSummary = "\(transition.from.title) -> \(transition.to.title) · 口播失败"
                 appendLog("error", "串场播放失败：\(error.localizedDescription)")
@@ -735,7 +919,7 @@ final class SoulDJStore: ObservableObject {
             do {
                 _ = try audioEngine.startBridgeToPreloadedNext(
                     crossfadeMs: 2400,
-                    targetVolume: transition.ttsPlayed ? 0.28 : Float(volume)
+                    targetVolume: transition.ttsPlayed ? 0.14 : Float(volume)
                 ) { [weak self] status in
                     Task { @MainActor in
                         self?.completePreparedBridge(status: status)
@@ -761,6 +945,7 @@ final class SoulDJStore: ObservableObject {
         preparingTrackID = nil
         downloadStatus = "正在播放"
         rememberLocalPath(for: promotedTrack)
+        loadLyrics(for: promotedTrack)
         applyAudioStatus(status)
         updateNextTrack()
         aiDjTransitionSummary = "\(transition.from.title) -> \(transition.to.title) · 串场完成"
@@ -909,9 +1094,11 @@ private struct PreparedTransition {
     let script: String
     let audioPath: String
     let nextAudioURL: URL
+    let duckStartSeconds: Double
     let ttsStartSeconds: Double
     let nextStartSeconds: Double
     let ttsDurationSeconds: Double
+    var duckStarted: Bool
     var ttsPlayed: Bool
     var crossfadeStarted: Bool
 }

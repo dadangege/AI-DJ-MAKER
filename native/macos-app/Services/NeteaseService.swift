@@ -117,8 +117,29 @@ final class NeteaseService: @unchecked Sendable {
         decodeCache([NeteasePlaylist].self, from: cacheDir.appendingPathComponent("playlists.json")) ?? []
     }
 
+    func loadCachedPublicPlaylists() -> [NeteasePlaylist] {
+        let cached = decodeCache([NeteasePlaylist].self, from: cacheDir.appendingPathComponent("public-playlists.json")) ?? []
+        return cached.isEmpty ? NeteasePlaylist.fallbackPublic : cached
+    }
+
     func loadCachedAccount() -> NeteaseAccount {
         decodeCache(NeteaseAccount.self, from: cacheDir.appendingPathComponent("account.json")) ?? .guest
+    }
+
+    func loadPublicPlaylists(limit: Int = 8, category: String = "华语", offset: Int = 0) async throws -> [NeteasePlaylist] {
+        let encodedCategory = category.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? category
+        let payload = try await fetchNeteaseJSON(
+            "https://music.163.com/api/playlist/list?cat=\(encodedCategory)&order=hot&offset=\(offset)&limit=\(limit)",
+            cookies: [:]
+        )
+        let rawPlaylists = payload["playlists"] as? [[String: Any]]
+            ?? payload["playlist"] as? [[String: Any]]
+            ?? []
+        let normalized = rawPlaylists.compactMap(normalizePlaylist)
+        if normalized.isEmpty == false {
+            try saveCache(normalized, to: cacheDir.appendingPathComponent("public-playlists.json"))
+        }
+        return normalized.isEmpty ? loadCachedPublicPlaylists() : normalized
     }
 
     func loadPlaylistTracks(id: String, preferCache: Bool = true) async throws -> [SoulTrack] {
@@ -127,10 +148,7 @@ final class NeteaseService: @unchecked Sendable {
             return cached
         }
 
-        let cookies = try readCookieMap()
-        guard cookies["MUSIC_U"] != nil else {
-            throw NeteaseServiceError.message("还没有网易云登录态，请先扫码登录。")
-        }
+        let cookies = (try? readCookieMap()) ?? [:]
 
         let detail = try await postNeteaseFormJSON(
             "https://music.163.com/api/v6/playlist/detail",
@@ -250,6 +268,40 @@ final class NeteaseService: @unchecked Sendable {
         return excerpt
     }
 
+    func timedLyrics(for track: SoulTrack) async throws -> [TimedLyricLine] {
+        let cachedURL = cacheDir.appendingPathComponent("lyric-timed-\(sanitize(track.id)).lrc")
+        let lyric: String
+        if let cached = try? String(contentsOf: cachedURL, encoding: .utf8),
+           cached.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            lyric = cached
+        } else {
+            let payload = try await postNeteaseFormJSON(
+                "https://interface3.music.163.com/api/song/lyric",
+                fields: [
+                    "id": track.id,
+                    "cp": "false",
+                    "tv": "0",
+                    "lv": "0",
+                    "rv": "0",
+                    "kv": "0",
+                    "yv": "0",
+                    "ytv": "0",
+                    "yrv": "0"
+                ],
+                cookies: try readCookieMap()
+            )
+            lyric = (value(for: ["lrc", "lyric"], in: payload) as? String)
+                ?? (value(for: ["data", "lrc", "lyric"], in: payload) as? String)
+                ?? ""
+            if lyric.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+                try? lyric.write(to: cachedURL, atomically: true, encoding: .utf8)
+            }
+        }
+
+        return parseTimedLyrics(lyric)
+    }
+
     func cacheAudio(from stream: NeteaseAudioStream) async throws -> URL {
         if FileManager.default.fileExists(atPath: stream.cacheURL.path) {
             return stream.cacheURL
@@ -307,6 +359,20 @@ final class NeteaseService: @unchecked Sendable {
             let duration = durationMs > 1000 ? durationMs / 1000 : durationMs
             return SoulTrack(id: "\(id)", title: title, artist: artist, album: album, duration: duration, localPath: "", coverURL: coverURL)
         }
+    }
+
+    private func normalizePlaylist(_ item: [String: Any]) -> NeteasePlaylist? {
+        guard let id = item["id"], let name = item["name"] as? String, name.isEmpty == false else { return nil }
+        let creator = (item["creator"] as? [String: Any])?["nickname"] as? String
+            ?? item["creatorName"] as? String
+            ?? "网易云精选"
+        let trackCount = item["trackCount"] as? Int
+            ?? item["bookCount"] as? Int
+            ?? 0
+        let coverURL = item["coverImgUrl"] as? String
+            ?? item["picUrl"] as? String
+            ?? ""
+        return NeteasePlaylist(id: "\(id)", name: name, trackCount: trackCount, creator: creator, coverURL: coverURL)
     }
 
     private func songURLPayload(for track: SoulTrack, quality: String, cookies: [String: String]) async throws -> [String: Any] {
@@ -528,6 +594,37 @@ final class NeteaseService: @unchecked Sendable {
         let selected = Array(lines.prefix(10))
         let text = selected.joined(separator: " / ")
         return String(text.prefix(180))
+    }
+
+    private func parseTimedLyrics(_ lyric: String) -> [TimedLyricLine] {
+        let metadataPrefixes = ["ti:", "ar:", "al:", "by:", "offset:"]
+        var parsed: [(time: Double, text: String)] = []
+
+        for rawLine in lyric.components(separatedBy: .newlines) {
+            let timestamps = rawLine.matches(of: #/\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\]/#)
+            guard timestamps.isEmpty == false else { continue }
+
+            let text = rawLine
+                .replacingOccurrences(of: #"\[[^\]]+\]"#, with: "", options: .regularExpression)
+                .replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            guard text.isEmpty == false else { continue }
+            guard metadataPrefixes.contains(where: { text.localizedCaseInsensitiveContains($0) }) == false else { continue }
+
+            for timestamp in timestamps {
+                let minutes = Double(timestamp.1) ?? 0
+                let seconds = Double(timestamp.2) ?? 0
+                let fractionText = String(timestamp.3 ?? "")
+                let fraction = fractionText.isEmpty ? 0 : (Double(fractionText) ?? 0) / pow(10, Double(fractionText.count))
+                parsed.append((minutes * 60 + seconds + fraction, text))
+            }
+        }
+
+        return parsed
+            .sorted { $0.time < $1.time }
+            .enumerated()
+            .map { index, line in TimedLyricLine(id: index, time: line.time, text: line.text) }
     }
 
     private func sanitize(_ value: String) -> String {

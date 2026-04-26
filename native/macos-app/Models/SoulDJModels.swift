@@ -30,6 +30,13 @@ struct NeteasePlaylist: Identifiable, Equatable, Codable {
     let trackCount: Int
     let creator: String
     let coverURL: String
+
+    static let fallbackPublic: [NeteasePlaylist] = [
+        NeteasePlaylist(id: "3778678", name: "云音乐热歌榜", trackCount: 200, creator: "网易云音乐", coverURL: ""),
+        NeteasePlaylist(id: "3779629", name: "云音乐新歌榜", trackCount: 100, creator: "网易云音乐", coverURL: ""),
+        NeteasePlaylist(id: "19723756", name: "云音乐飙升榜", trackCount: 100, creator: "网易云音乐", coverURL: ""),
+        NeteasePlaylist(id: "2884035", name: "网易原创歌曲榜", trackCount: 100, creator: "网易云音乐", coverURL: "")
+    ]
 }
 
 struct NeteaseAccount: Equatable, Codable {
@@ -45,6 +52,29 @@ struct NeteaseLibrary: Equatable, Codable {
     let playlists: [NeteasePlaylist]
 }
 
+struct EnvironmentContext: Equatable {
+    let city: String
+    let region: String
+    let countryCode: String
+    let latitude: Double
+    let longitude: Double
+    let temperatureC: Double?
+    let weatherCode: Int?
+    let weatherLabel: String?
+    let cloudCover: Int?
+    let updatedAt: Date
+
+    var displayText: String {
+        let cityText = city.isEmpty ? region : city
+        let weatherParts = [
+            temperatureC.map { "\(Int($0.rounded()))°C" },
+            weatherLabel
+        ].compactMap { $0 }.filter { !$0.isEmpty }
+        guard weatherParts.isEmpty == false else { return cityText }
+        return ([cityText] + weatherParts).filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+}
+
 struct SoulTrack: Identifiable, Equatable, Codable {
     let id: String
     let title: String
@@ -56,10 +86,10 @@ struct SoulTrack: Identifiable, Equatable, Codable {
 
     static let placeholder = SoulTrack(
         id: "placeholder",
-        title: "Innerbloom",
-        artist: "RUFUS DU SOL",
-        album: "Bloom",
-        duration: 578,
+        title: "还没有播放歌曲",
+        artist: "选择歌单后双击歌曲开始播放",
+        album: "",
+        duration: 0,
         localPath: "",
         coverURL: nil
     )
@@ -135,4 +165,118 @@ struct DJLogEntry: Identifiable {
     let time = Date()
     let level: String
     let message: String
+}
+
+struct TimedLyricLine: Identifiable, Equatable {
+    let id: Int
+    let time: Double
+    let text: String
+}
+
+enum AIHostMode: String, CaseIterable, Codable, Identifiable {
+    case dj
+    case midnight
+    case curator
+    case companion
+    case party
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .dj: return "夜店 DJ"
+        case .midnight: return "午夜电台"
+        case .curator: return "音乐推荐官"
+        case .companion: return "情绪陪伴"
+        case .party: return "轻松聊天"
+        }
+    }
+
+    var promptInstruction: String {
+        switch self {
+        case .dj: return "像夜店或现场 DJ 一样控场，节奏强、短句、有气氛，但不要喊麦过度。"
+        case .midnight: return "语气低沉、慢节奏、偏陪伴感，适合深夜收听，不要太兴奋。"
+        case .curator: return "解释为什么推荐下一首歌，突出风格、情绪或听感理由。"
+        case .companion: return "根据歌曲情绪做温柔过渡，照顾用户的感受，少一点资讯感。"
+        case .party: return "像朋友陪听一样轻松自然，少一点表演感，适合日常流行歌单。"
+        }
+    }
+}
+
+struct AIHostProfile: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let tagline: String
+    let voiceTag: String
+    let persona: String
+    let voiceDescription: String
+    let suitableScenes: String
+    let voiceID: String
+    let speed: Double
+    let pitch: Double
+    let colors: [UInt]
+    let symbol: String
+
+    static let all: [AIHostProfile] = [
+        AIHostProfile(
+            id: "ava",
+            name: "Ava",
+            tagline: "都市夜班 DJ，擅长午夜陪伴和情绪化串场",
+            voiceTag: "温柔女声 / 低沉午夜感",
+            persona: "Ava 像城市凌晨还亮着的一盏灯，会把两首歌之间的空隙讲得柔软、有画面，也懂得留白。",
+            voiceDescription: "语速偏慢，音高略低，适合温柔、沉稳、带一点夜色的中文电台口播。",
+            suitableScenes: "午夜歌单、情绪歌单、独处、开车回家、下班后的放松时间。",
+            voiceID: "Chinese (Mandarin)_News_Anchor",
+            speed: 0.90,
+            pitch: -1,
+            colors: [0xA078FF, 0x4CD7F6],
+            symbol: "moon.stars.fill"
+        ),
+        AIHostProfile(
+            id: "leo",
+            name: "Leo",
+            tagline: "潮流音乐主播，适合流行歌单和轻松互动",
+            voiceTag: "活力青年 / 轻松流行感",
+            persona: "Leo 更像朋友里的音乐雷达，话不多但很会接住流行歌单的节奏，让每次切歌都轻松一点。",
+            voiceDescription: "语速自然略快，音色清爽，适合流行、轻快、聊天感强的串场。",
+            suitableScenes: "通勤、下午工作、流行歌单、朋友聚会前的热身。",
+            voiceID: "Chinese (Mandarin)_Radio_Host",
+            speed: 1.02,
+            pitch: 0,
+            colors: [0x4CD7F6, 0x7EF29D],
+            symbol: "bolt.fill"
+        ),
+        AIHostProfile(
+            id: "nora",
+            name: "Nora",
+            tagline: "温柔陪伴型主播，适合睡前电台和安静场景",
+            voiceTag: "温柔女声 / 安静陪伴",
+            persona: "Nora 会把音乐说得很近，像坐在旁边陪你听完这一首，不催促，也不打扰。",
+            voiceDescription: "语速更慢，音高偏低，语气柔和，强调陪伴感和安全感。",
+            suitableScenes: "睡前、阅读、雨天、安静工作、需要被温柔接住的时候。",
+            voiceID: "Chinese (Mandarin)_Warm_Bestie",
+            speed: 0.88,
+            pitch: -1,
+            colors: [0xFF8EC7, 0xA078FF],
+            symbol: "heart.fill"
+        ),
+        AIHostProfile(
+            id: "max",
+            name: "Max",
+            tagline: "高能派对 DJ，适合运动、开车、派对音乐",
+            voiceTag: "磁性男声 / 高能派对感",
+            persona: "Max 负责把能量抬起来，直接、明亮、有节拍感，适合让下一首歌更有登场气势。",
+            voiceDescription: "语速更快，音高略高，表达更有推动力，适合节奏强和情绪高的歌单。",
+            suitableScenes: "运动、开车、派对、电子/摇滚/高 BPM 歌单。",
+            voiceID: "Chinese (Mandarin)_Male_Announcer",
+            speed: 1.10,
+            pitch: 1,
+            colors: [0xEF3124, 0xFFD166],
+            symbol: "flame.fill"
+        )
+    ]
+
+    static func profile(for id: String) -> AIHostProfile {
+        all.first { $0.id == id } ?? all[0]
+    }
 }

@@ -3,10 +3,31 @@ import SwiftUI
 struct SoulDJRootView: View {
     @ObservedObject var store: SoulDJStore
 
-    var body: some View {
-        ZStack {
-            SoulBackground()
+    private let designSize = CGSize(width: 1280, height: 840)
 
+    var body: some View {
+        GeometryReader { proxy in
+            let scale = min(1, proxy.size.width / designSize.width, proxy.size.height / designSize.height)
+
+            ZStack(alignment: .topLeading) {
+                SoulBackground()
+
+                rootContent
+                    .frame(
+                        width: scale < 1 ? designSize.width : proxy.size.width,
+                        height: scale < 1 ? designSize.height : proxy.size.height,
+                        alignment: .topLeading
+                    )
+                    .scaleEffect(scale, anchor: .topLeading)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
+            .clipped()
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private var rootContent: some View {
+        ZStack {
             VStack(spacing: 0) {
                 TopBar(store: store)
 
@@ -29,8 +50,11 @@ struct SoulDJRootView: View {
             if store.showLoginSheet {
                 LoginOverlay(store: store)
             }
+
+            if store.showHostPicker {
+                AIHostPickerOverlay(store: store)
+            }
         }
-        .preferredColorScheme(.dark)
     }
 
     @ViewBuilder
@@ -67,6 +91,10 @@ struct TopBar: View {
                 .font(.system(size: 18, weight: .bold, design: .rounded))
                 .foregroundStyle(LinearGradient(colors: [SoulTheme.primaryContainer, SoulTheme.secondary], startPoint: .leading, endPoint: .trailing))
 
+            if let environmentContext = store.environmentContext {
+                EnvironmentChip(context: environmentContext)
+            }
+
             Spacer()
 
             Button {
@@ -91,6 +119,25 @@ struct TopBar: View {
         .frame(height: 52)
         .background(.black.opacity(0.46))
         .overlay(Rectangle().fill(.white.opacity(0.08)).frame(height: 1), alignment: .bottom)
+    }
+}
+
+struct EnvironmentChip: View {
+    let context: EnvironmentContext
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "location.fill")
+                .font(.system(size: 10, weight: .bold))
+            Text(context.displayText)
+                .lineLimit(1)
+        }
+        .font(.system(size: 12, weight: .semibold))
+        .foregroundStyle(SoulTheme.muted)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(.white.opacity(0.06), in: Capsule())
+        .overlay(Capsule().stroke(.white.opacity(0.10)))
     }
 }
 
@@ -136,46 +183,17 @@ struct SidebarIdentity: View {
     @ObservedObject var store: SoulDJStore
 
     var body: some View {
-        if store.selectedRoute == .playlists {
-            Button {
-                store.goHome()
-            } label: {
-                HStack(spacing: 12) {
-                    ZStack {
-                        Circle()
-                            .fill(.white.opacity(0.07))
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 18, weight: .bold))
-                            .foregroundStyle(SoulTheme.primary)
-                    }
-                    .frame(width: 46, height: 46)
-                    .overlay(Circle().stroke(.white.opacity(0.12), lineWidth: 1))
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("返回首页")
-                            .font(.system(size: 21, weight: .bold))
-                            .foregroundStyle(SoulTheme.text)
-                        Text(store.selectedPlaylist?.name ?? "Library")
-                            .font(.system(size: 13))
-                            .foregroundStyle(SoulTheme.muted)
-                            .lineLimit(1)
-                    }
-                }
-            }
-            .buttonStyle(.plain)
-        } else {
-            HStack(spacing: 12) {
-                AccountAvatar(account: store.account, loggedIn: store.isLoggedIn)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(store.isLoggedIn ? store.account.nickname : "Your Soul")
-                        .font(.system(size: 21, weight: .bold))
-                        .foregroundStyle(SoulTheme.text)
-                        .lineLimit(1)
-                    Text(store.isLoggedIn ? "网易云已登录" : "Local Listener")
-                        .font(.system(size: 13))
-                        .foregroundStyle(SoulTheme.muted)
-                        .lineLimit(1)
-                }
+        HStack(spacing: 12) {
+            AccountAvatar(account: store.account, loggedIn: store.isLoggedIn)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(store.isLoggedIn ? store.account.nickname : "Your Soul")
+                    .font(.system(size: 21, weight: .bold))
+                    .foregroundStyle(SoulTheme.text)
+                    .lineLimit(1)
+                Text(store.isLoggedIn ? "网易云已登录" : "Local Listener")
+                    .font(.system(size: 13))
+                    .foregroundStyle(SoulTheme.muted)
+                    .lineLimit(1)
             }
         }
     }

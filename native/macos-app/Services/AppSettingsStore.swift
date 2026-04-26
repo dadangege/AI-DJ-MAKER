@@ -8,6 +8,8 @@ final class AppSettingsStore: ObservableObject {
     @Published var voiceID: String
     @Published var speed: Double
     @Published var pitch: Double
+    @Published var selectedHostId: String
+    @Published var selectedHostMode: String
 
     private let defaults = UserDefaults.standard
     private let settingsURL = URL(fileURLWithPath: "\(NSHomeDirectory())/Library/Application Support/MiniMax TTS Studio/settings.json")
@@ -21,6 +23,8 @@ final class AppSettingsStore: ObservableObject {
         voiceID = defaults.string(forKey: Keys.voiceID) ?? nodeSettings["voiceId"] ?? "Chinese (Mandarin)_Gentle_Senior"
         speed = defaults.object(forKey: Keys.speed) as? Double ?? 0.92
         pitch = defaults.object(forKey: Keys.pitch) as? Double ?? -1
+        selectedHostId = defaults.string(forKey: Keys.selectedHostId) ?? nodeSettings["selectedHostId"] ?? ""
+        selectedHostMode = defaults.string(forKey: Keys.selectedHostMode) ?? nodeSettings["selectedHostMode"] ?? ""
     }
 
     func save() {
@@ -31,7 +35,38 @@ final class AppSettingsStore: ObservableObject {
         defaults.set(voiceID, forKey: Keys.voiceID)
         defaults.set(speed, forKey: Keys.speed)
         defaults.set(pitch, forKey: Keys.pitch)
+        defaults.set(selectedHostId, forKey: Keys.selectedHostId)
+        defaults.set(selectedHostMode, forKey: Keys.selectedHostMode)
         saveNodeSettings()
+    }
+
+    var selectedHost: AIHostProfile {
+        AIHostProfile.profile(for: selectedHostId)
+    }
+
+    var hasSelectedHost: Bool {
+        AIHostProfile.all.contains { $0.id == selectedHostId }
+    }
+
+    var selectedHostOrNil: AIHostProfile? {
+        AIHostProfile.all.first { $0.id == selectedHostId }
+    }
+
+    var hostMode: AIHostMode {
+        AIHostMode(rawValue: selectedHostMode) ?? .dj
+    }
+
+    var hostModeOrNil: AIHostMode? {
+        AIHostMode(rawValue: selectedHostMode)
+    }
+
+    func applyHost(_ host: AIHostProfile, mode: AIHostMode) {
+        selectedHostId = host.id
+        selectedHostMode = mode.rawValue
+        voiceID = host.voiceID
+        speed = host.speed
+        pitch = host.pitch
+        save()
     }
 
     var maskedKey: String {
@@ -47,6 +82,8 @@ final class AppSettingsStore: ObservableObject {
         static let voiceID = "soulDJ.openAI.voiceID"
         static let speed = "soulDJ.voice.speed"
         static let pitch = "soulDJ.voice.pitch"
+        static let selectedHostId = "soulDJ.host.selectedHostId"
+        static let selectedHostMode = "soulDJ.host.selectedHostMode"
     }
 
     private func saveNodeSettings() {
@@ -58,6 +95,12 @@ final class AppSettingsStore: ObservableObject {
                 "ttsModel": ttsModel,
                 "voiceId": voiceID
             ]
+            if selectedHostId.isEmpty == false {
+                payload["selectedHostId"] = selectedHostId
+            }
+            if selectedHostMode.isEmpty == false {
+                payload["selectedHostMode"] = selectedHostMode
+            }
             if apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
                 payload["apiKey"] = apiKey
             }

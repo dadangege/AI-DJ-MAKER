@@ -9,15 +9,34 @@ struct PlaylistDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
+                Button {
+                    store.goHome()
+                } label: {
+                    Label("返回首页", systemImage: "chevron.left")
+                }
+                .buttonStyle(SoulPillButtonStyle(kind: .ghost))
+
                 HStack(alignment: .bottom, spacing: 32) {
                     ZStack {
                         RoundedRectangle(cornerRadius: 16)
                             .fill(LinearGradient(colors: [SoulTheme.primaryContainer.opacity(0.75), SoulTheme.secondary.opacity(0.45), .black], startPoint: .topLeading, endPoint: .bottomTrailing))
-                        Image(systemName: "music.note.list")
-                            .font(.system(size: 78, weight: .bold))
-                            .foregroundStyle(.white.opacity(0.86))
+                        if let url = playlist?.coverURL.neteaseImageURL {
+                            AsyncImage(url: url) { phase in
+                                switch phase {
+                                case .success(let image):
+                                    image
+                                        .resizable()
+                                        .scaledToFill()
+                                default:
+                                    playlistPlaceholder
+                                }
+                            }
+                        } else {
+                            playlistPlaceholder
+                        }
                     }
                     .frame(width: 240, height: 240)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                     .glassPanel(cornerRadius: 18)
 
                     VStack(alignment: .leading, spacing: 16) {
@@ -111,6 +130,12 @@ struct PlaylistDetailView: View {
             }
             .padding(32)
         }
+    }
+
+    private var playlistPlaceholder: some View {
+        Image(systemName: "music.note.list")
+            .font(.system(size: 78, weight: .bold))
+            .foregroundStyle(.white.opacity(0.86))
     }
 }
 

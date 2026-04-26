@@ -58,7 +58,7 @@ final class MiniMaxService {
 
         let json = try await postJSON(path: "chat/completions", payload: payload)
         let raw = extractAssistantText(json)
-        let cleaned = cleanScript(raw)
+        let cleaned = enforceTimeAnnouncement(cleanScript(raw), timeAnnouncement: timeAnnouncement)
         if cleaned.isEmpty == false {
             return GeneratedTransitionScript(text: cleaned, source: .ai)
         }
@@ -81,12 +81,12 @@ final class MiniMaxService {
             "max_completion_tokens": 2048
         ]
         let retryJSON = try await postJSON(path: "chat/completions", payload: retryPayload)
-        let retryCleaned = cleanScript(extractAssistantText(retryJSON))
+        let retryCleaned = enforceTimeAnnouncement(cleanScript(extractAssistantText(retryJSON)), timeAnnouncement: timeAnnouncement)
         if retryCleaned.isEmpty == false {
             return GeneratedTransitionScript(text: retryCleaned, source: .aiRetry)
         }
 
-        return GeneratedTransitionScript(text: fallbackScript(current: current, next: next), source: .fallback)
+        return GeneratedTransitionScript(text: enforceTimeAnnouncement(fallbackScript(current: current, next: next), timeAnnouncement: timeAnnouncement), source: .fallback)
     }
 
     private func transitionPrompt(
@@ -99,18 +99,26 @@ final class MiniMaxService {
     ) -> String {
         let nextText = next.map { "下一首是 \($0.artist) 的《\($0.title)》。" } ?? "没有明确下一首。"
         var lines = [
-            "你现在是电台的情感主播。",
+            "你现在是 AI 电台主播。",
             "现在用户正在听 \(current.artist) 的《\(current.title)》。",
             nextText,
             "请生成一段两首歌之间的自然串场旁白，用来帮助用户更好地听音乐。",
             "可以是情绪类，也可以是正常描述类。",
             "正文完整返回，100 字以内。",
-            "如果提供了报时提示，请把报时自然放在开头。",
+            "如果提供了报时提示，必须把报时提示作为第一句话逐字放在正文开头，不要改写，不要用夜色、凌晨、今晚等氛围词替代具体时间。",
             "如果提供了歌词片段，请结合片段理解歌曲情绪和意象，但不要直接引用、复述或改写歌词原文。",
             "只输出最终可播报正文，不要解释，不要 Markdown，不要分行，不要 <think>。"
         ]
+        if let host = settings.selectedHostOrNil {
+            lines.insert("主播人设：\(host.persona)", at: 1)
+            if let mode = settings.hostModeOrNil {
+                lines.insert("当前播报模式：\(mode.title)。\(mode.promptInstruction)", at: 2)
+            }
+        } else {
+            lines.insert("用户还没有选择具体主播，请使用中性的电台口吻，不要自称 Ava、Leo、Nora 或 Max。", at: 1)
+        }
         if let timeAnnouncement, timeAnnouncement.isEmpty == false {
-            lines.append("报时提示：\(timeAnnouncement)")
+            lines.append("强制报时开头：\(timeAnnouncement)")
         }
         if let currentLyricExcerpt, currentLyricExcerpt.isEmpty == false {
             lines.append("当前歌歌词片段（清洗后）：\(currentLyricExcerpt)")
@@ -124,13 +132,27 @@ final class MiniMaxService {
         return lines.joined(separator: "\n")
     }
 
-    func synthesizeSpeech(_ text: String) async throws -> SynthesizedSpeech {
+    func synthesizeSpeech(
+        _ text: String,
+        voiceID overrideVoiceID: String? = nil,
+        speed overrideSpeed: Double? = nil,
+        pitch overridePitch: Double? = nil,
+        cacheKey: String? = nil
+    ) async throws -> SynthesizedSpeech {
         guard settings.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
             throw MiniMaxServiceError.message("DJ 还未生效，请先去设置里配置")
         }
 
         try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
-        let outURL = outputDir.appendingPathComponent("tts-\(Int(Date().timeIntervalSince1970 * 1000)).mp3")
+        let outURL: URL
+        if let cacheKey {
+            outURL = outputDir.appendingPathComponent("preview-\(sanitize(cacheKey)).mp3")
+            if FileManager.default.fileExists(atPath: outURL.path) {
+                return SynthesizedSpeech(path: outURL.path, durationMs: nil)
+            }
+        } else {
+            outURL = outputDir.appendingPathComponent("tts-\(Int(Date().timeIntervalSince1970 * 1000)).mp3")
+        }
         let payload: [String: Any] = [
             "model": settings.ttsModel,
             "text": text,
@@ -138,10 +160,10 @@ final class MiniMaxService {
             "language_boost": "Chinese",
             "output_format": "hex",
             "voice_setting": [
-                "voice_id": settings.voiceID,
-                "speed": settings.speed,
+                "voice_id": overrideVoiceID ?? settings.voiceID,
+                "speed": overrideSpeed ?? settings.speed,
                 "vol": 2,
-                "pitch": settings.pitch
+                "pitch": overridePitch ?? settings.pitch
             ],
             "audio_setting": [
                 "sample_rate": 32000,
@@ -164,6 +186,12 @@ final class MiniMaxService {
         let extra = json["extra_info"] as? [String: Any]
         let durationMs = extra?["audio_length"] as? Double ?? (extra?["audio_length"] as? NSNumber)?.doubleValue
         return SynthesizedSpeech(path: outURL.path, durationMs: durationMs)
+    }
+
+    private func sanitize(_ value: String) -> String {
+        value.map { character in
+            character.isLetter || character.isNumber || character == "-" || character == "_" ? character : "_"
+        }.reduce(into: "") { $0.append($1) }
     }
 
     private func postJSON(path: String, payload: [String: Any]) async throws -> [String: Any] {
@@ -219,6 +247,20 @@ final class MiniMaxService {
         output = output.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
         output = output.replacingOccurrences(of: #"^(最终播报正文|最终正文|正文|串场词|旁白)[:：]\s*"#, with: "", options: .regularExpression)
         return output.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "\"'“”‘’")))
+    }
+
+    private func enforceTimeAnnouncement(_ text: String, timeAnnouncement: String?) -> String {
+        guard let timeAnnouncement, timeAnnouncement.isEmpty == false else { return text }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix(timeAnnouncement) == false else { return trimmed }
+        let withoutExistingTime = trimmed
+            .replacingOccurrences(
+                of: #"现在是北京时间\s*\d{1,2}\s*点(?:半|整)?[。,.，、\s]*"#,
+                with: "",
+                options: .regularExpression
+            )
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return "\(timeAnnouncement)\(withoutExistingTime.isEmpty ? "" : " \(withoutExistingTime)")"
     }
 
     private func fallbackScript(current: SoulTrack, next: SoulTrack?) -> String {

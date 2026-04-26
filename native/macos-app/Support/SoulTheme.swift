@@ -23,6 +23,17 @@ extension Color {
     }
 }
 
+extension String {
+    var neteaseImageURL: URL? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false else { return nil }
+        let secure = trimmed.hasPrefix("http://")
+            ? "https://" + trimmed.dropFirst("http://".count)
+            : trimmed
+        return URL(string: String(secure))
+    }
+}
+
 struct GlassPanel: ViewModifier {
     var cornerRadius: CGFloat = 16
     var opacity: Double = 0.58

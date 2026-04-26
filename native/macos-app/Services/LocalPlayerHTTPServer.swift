@@ -70,9 +70,9 @@ final class LocalPlayerHTTPServer {
                 return audioEngine.stop()
             case ("POST", "/tts/play"):
                 let path = request.body["path"] as? String ?? ""
-                let duckVolume = Float((request.body["duckVolume"] as? NSNumber)?.doubleValue ?? 0.28)
-                let fadeMs = (request.body["fadeMs"] as? NSNumber)?.intValue ?? 720
-                let ttsGain = Float((request.body["ttsGain"] as? NSNumber)?.doubleValue ?? 1.08)
+                let duckVolume = Float((request.body["duckVolume"] as? NSNumber)?.doubleValue ?? 0.14)
+                let fadeMs = (request.body["fadeMs"] as? NSNumber)?.intValue ?? 3000
+                let ttsGain = Float((request.body["ttsGain"] as? NSNumber)?.doubleValue ?? 1.55)
                 return try audioEngine.playTTS(path: path, duckVolume: duckVolume, fadeMs: fadeMs, ttsGain: ttsGain)
             default:
                 return ["ok": false, "error": "Unknown route \(request.method) \(request.path)"]

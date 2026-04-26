@@ -41,9 +41,16 @@ struct PlayerBar: View {
 
     private var trackInfo: some View {
         HStack(spacing: 12) {
-            AlbumArtMini(coverURL: store.currentTrack.coverURL)
-                .frame(width: 52, height: 52)
-                .layoutPriority(1)
+            Button {
+                store.openPlayingPlaylist()
+            } label: {
+                AlbumArtMini(coverURL: store.currentTrack.coverURL)
+                    .frame(width: 52, height: 52)
+            }
+            .buttonStyle(.plain)
+            .disabled(store.selectedPlaylist == nil)
+            .help("打开正在播放的歌单")
+            .layoutPriority(1)
             VStack(alignment: .leading, spacing: 4) {
                 Text(store.currentTrack.title)
                     .font(.system(size: 15, weight: .semibold))
@@ -134,14 +141,15 @@ struct PlayerBar: View {
                 store.cyclePlaybackMode()
             } label: {
                 Image(systemName: store.playbackMode.symbolName)
+                    .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(store.playbackMode == .ordered ? SoulTheme.muted : SoulTheme.secondary)
+                    .frame(width: 34, height: 34)
+                    .background(.white.opacity(0.07), in: Circle())
+                    .overlay(Circle().stroke(.white.opacity(0.10)))
             }
             .buttonStyle(.plain)
             .help(store.playbackMode.title)
 
-            if showQueueIcon {
-                Image(systemName: "music.note.list")
-            }
             Image(systemName: "speaker.wave.2.fill")
             Slider(
                 value: Binding(
@@ -170,7 +178,7 @@ struct AlbumArtMini: View {
             RoundedRectangle(cornerRadius: 7)
                 .fill(LinearGradient(colors: [SoulTheme.primaryContainer, SoulTheme.secondary, .black], startPoint: .topLeading, endPoint: .bottomTrailing))
 
-            if let coverURL, let url = URL(string: coverURL), !coverURL.isEmpty {
+            if let url = coverURL?.neteaseImageURL {
                 AsyncImage(url: url) { phase in
                     switch phase {
                     case .success(let image):

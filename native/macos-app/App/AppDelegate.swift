@@ -18,7 +18,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.save()
         let netease = NeteaseService(projectDir: projectDir)
         let miniMax = MiniMaxService(settings: settings)
-        let store = SoulDJStore(settings: settings, netease: netease, audioEngine: audioEngine, miniMax: miniMax)
+        let environment = EnvironmentContextService()
+        let store = SoulDJStore(settings: settings, netease: netease, audioEngine: audioEngine, miniMax: miniMax, environment: environment)
         self.store = store
 
         createWindow(store: store)
@@ -36,7 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             defer: false
         )
         window.title = "Soul DJ"
-        window.minSize = NSSize(width: 980, height: 680)
+        window.minSize = NSSize(width: 760, height: 500)
         window.center()
         window.contentView = hostingView
         window.makeKeyAndOrderFront(nil)
