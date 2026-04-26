@@ -1,193 +1,143 @@
-# Soul DJ / AI-DJ-MAKER
+# Soul DJ
 
-一个运行在 Mac 本地的 AI 电台 / AI DJ 原型。它可以扫码登录网易云、读取歌单、播放本地队列，并在两首歌衔接处提前生成 AI 主播串场词和 TTS 口播，通过双轨播放实现基础 ducking、fade 与 crossfade。
+Soul DJ 是一个开源的 macOS AI 电台播放器原型。它可以登录网易云音乐、读取歌单、本地播放歌曲，并在两首歌之间生成 AI 主播串场，让普通歌单变成更像电台的连续收听体验。
 
-当前主版本是原生 SwiftUI App，不再依赖 Python 版 `Netease_url` 服务。网易云扫码登录、歌单读取、歌词读取和播放地址解析都已迁移到 Swift 内置实现。
+项目主界面使用原生 SwiftUI 编写，配合少量 Node.js 脚本完成构建、打包和 TTS 辅助工具。
 
-## 当前能力
+## 功能特性
 
-- 原生 SwiftUI 桌面界面：深色玻璃态 Soul DJ UI、左侧导航、AI 主播状态、底部播放器。
-- 网易云扫码登录：登录态保存在本机，不随分享包分发。
-- 歌单播放：支持播放/暂停、上一首/下一首、进度拖动、音量、顺序/循环/单曲循环/随机。
-- AI 串场：当前歌开始后提前生成“当前歌 -> 下一首”的串场文案和 TTS 音频。
-- 广播式衔接：根据 TTS 时长计算口播开始点，让口播尽量跨在两首歌边界附近。
-- 混音策略：口播时音乐自动 duck，结束后平滑恢复；切歌时下一首淡入。
-- OpenAI-compatible 配置：朋友使用时填写自己的 API Key、Base URL、文本模型和 TTS 模型。
+- 网易云音乐扫码登录。
+- 加载个人歌单和公共歌单，支持歌单封面展示。
+- 本地播放队列，支持播放、暂停、上一首、下一首、进度、音量、循环和随机。
+- 歌词同步显示。
+- AI 主播自动生成两首歌之间的串场文案。
+- 支持 MiniMax / OpenAI-compatible 文本与 TTS 配置。
+- 支持选择不同 AI 主播和播报模式。
+- 口播时自动降低背景音乐音量，并做线性淡入淡出。
+- 启动后可尝试展示 IP 城市和天气信息，失败时不影响使用。
 
-## 打包给别人测试
+## 界面结构
 
-构建并生成分享包：
+Soul DJ 是一个深色音乐 App 风格的桌面应用：
 
-```bash
-npm run mac-app:build
-npm run share:package
-```
+- 左侧：导航、歌单和推荐内容。
+- 中间：歌单详情、歌曲列表、播放内容和歌词。
+- 右侧：AI 主播、聊天、最近串场记录和音律可视化。
+- 底部：常驻播放控制栏。
 
-生成文件：
+## 运行要求
 
-```text
-dist/SoulDJ-Share.zip
-```
+- macOS
+- Node.js 18+
+- Xcode Command Line Tools 或 Xcode
+- 用于 AI 文案和 TTS 的 MiniMax / OpenAI-compatible API Key
 
-分享包只包含 `.app` 和 README，不包含 API Key、网易云 Cookie、音乐缓存、TTS 缓存、`.env`、Python 依赖或 Node 依赖。
-
-朋友第一次打开后需要：
-
-1. 在设置里填写自己的 OpenAI-compatible API 配置。
-2. 点击网易云扫码登录。
-3. 选择歌单，双击歌曲开始播放。
-
-> 当前构建是 Apple Silicon / arm64 版本，Intel Mac 可能无法运行。
-
-## 调研结论
-
-- MiniMax 的 HTTP T2A 接口是 `POST /v1/t2a_v2`，认证方式是 `Authorization: Bearer <api key>`。
-- 电台/主播场景建议先用 `speech-2.8-hd` 做高质量离线生成；如果更看重延迟，可以试 `speech-2.8-turbo`。
-- `MiniMax-M2.7-highspeed` 是文本生成模型，不适用于 TTS 的 `model` 参数；TTS 这里请使用 `speech-2.8-hd`、`speech-2.8-turbo` 等 speech 模型。
-- 情绪不是只靠一个开关，主要来自音色、语速、音高、停顿、文稿写法和控制标签组合。
-- `speech-2.8` 系列支持停顿标签，例如 `<#0.8#>`；也支持一些非语言/语气标签，例如 `(breath)`、`(laughs)`、`(sighs)`，适合做更自然的电台留白。
-- 中文电台建议从 `Chinese (Mandarin)_News_Anchor` 这类主播音色开始，再通过 `--speed 0.86-0.95`、`--pitch -2~-1` 做更沉稳的风格。
+网易云登录态、API Key、音乐缓存和 TTS 缓存都保存在本机，不会随分享包或仓库提交。
 
 ## 快速开始
 
-需要 Node.js 18+。
+克隆项目：
 
 ```bash
-cp .env.example .env
+git clone git@github.com:dadangege/AI-DJ-MAKER.git
+cd AI-DJ-MAKER
 ```
 
-命令行模式可以填 OpenAI-compatible 环境变量：
-
-```bash
-OPENAI_API_KEY=你的_key
-OPENAI_BASE_URL=https://api.minimaxi.com/v1
-OPENAI_MODEL=MiniMax-M2.7-highspeed
-```
-
-macOS App 模式不用改 `.env`，打开后在顶部“接口配置”里填写 API Key、Base URL、文本模型和 TTS 模型即可。
-
-生成示例电台音频：
-
-```bash
-npm run tts -- --file examples/radio-script.txt --preset story --out output/radio.mp3
-```
-
-如果你的机器没有 `npm`，可以直接用 Node 运行：
-
-```bash
-node src/minimax-tts.mjs --file examples/radio-script.txt --preset story --out output/radio.mp3
-```
-
-也可以直接传文字：
-
-```bash
-npm run tts -- --text "欢迎收听今晚的节目，我是你的声音朋友。" --out output/intro.mp3
-```
-
-## macOS App
-
-已经内置一个不用 Xcode 编译的轻量 macOS App：
-
-```text
-macos/Soul DJ.app
-```
-
-在 Finder 里双击它，会启动一个原生 SwiftUI 的 Soul DJ 窗口。当前新版主界面优先展示自建 AI DJ 播放器、网易云扫码登录、歌单入口、AI 主播状态和底部播放器。
-
-旧的网页 TTS 试听台仍保留在 `web/` 和 `src/app-server.mjs` 中作为回退/高级工具参考，但新版原生主窗口不再通过 `WKWebView` 打开 Node 网页 UI。
-
-首次发给朋友使用时，对方需要在 App 顶部填写自己的 OpenAI-compatible 配置。Key 会保存在对方本机：
-
-```text
-~/Library/Application Support/MiniMax TTS Studio/settings.json
-```
-
-生成不包含 `.env` 的分享目录：
-
-```bash
-npm run share:package
-```
-
-分享 `dist/SoulDJ-Share.zip` 即可。当前 Swift 主链路不再要求朋友安装 Python、Node 或运行额外依赖脚本。
-
-如果修改了原生壳代码，可以重新构建：
+构建 macOS App：
 
 ```bash
 npm run mac-app:build
 ```
 
-旧 Web 试听台仍可用命令行单独启动：
+打开应用：
 
 ```bash
-node src/app-server.mjs --open
+open "macos/Soul DJ.app"
 ```
 
-生成的音频会保存在：
+首次使用：
 
-```text
-output/mac-app/
+1. 在设置里填写 API Key、Base URL、文本模型和 TTS 模型。
+2. 使用网易云音乐扫码登录。
+3. 选择歌单并开始播放。
+4. 可选：进入 AI 主播切换页，选择主播和播报模式。
+
+## 常用命令
+
+构建原生 App：
+
+```bash
+npm run mac-app:build
 ```
 
-## 查看可用音色
+生成分享包：
+
+```bash
+npm run share:package
+```
+
+命令行生成一段 TTS：
+
+```bash
+npm run tts -- --text "欢迎收听 Soul DJ。" --out output/intro.mp3
+```
+
+查看可用音色：
 
 ```bash
 npm run voices
 ```
 
-或：
+启动旧版网页 TTS 工具：
 
 ```bash
-node src/list-voices.mjs
+npm run app
 ```
 
-如果默认主播音色不适合，可以把输出里的 `voice_id` 传给 `--voice`：
+## AI 主播模式
 
-```bash
-npm run tts -- --file examples/radio-script.txt --voice "Chinese (Mandarin)_News_Anchor" --out output/custom.mp3
-```
+当前支持几种主播风格：
 
-## 电台风格参数
+- 夜店 DJ：更活跃，重点介绍下一首歌和节奏变化。
+- 午夜电台：更慢、更低声、更有陪伴感。
+- 音乐推荐官：解释为什么推荐下一首歌。
+- 情绪陪伴：根据歌曲情绪做温柔过渡。
+- 轻松聊天：更随意、更口语化的短串场。
 
-内置了三个预设：
+主播和模式会保存在本机配置里。首次登录时默认不强制选择主播，用户可以在右侧 AI 主播区域进入设置。
 
-- `radio`：温暖、沉稳，默认预设。
-- `story`：更慢、更有留白，适合深夜节目、情感故事。
-- `news`：语速更标准，适合资讯播报。
+## 环境信息
 
-常用覆盖参数：
+应用启动后会尝试通过公共接口获取城市和天气：
 
-```bash
-npm run tts -- \
-  --file examples/radio-script.txt \
-  --model speech-2.8-hd \
-  --voice "Chinese (Mandarin)_News_Anchor" \
-  --speed 0.9 \
-  --pitch -1 \
-  --out output/radio.mp3
-```
+- IP 定位：`https://ipapi.co/json/`
+- 天气：Open-Meteo
 
-## 让声音更有情绪
+如果获取成功，顶部会显示一个城市和天气的小标签；如果失败，则不显示，不弹窗，也不影响播放。
 
-文稿里直接写停顿和语气控制：
+## 项目结构
 
 ```text
-今晚的节目，我们想从一个问题开始：如果时间可以被听见，它会是什么声音？
-<#0.8#>
-也许，是凌晨街角第一辆车驶过的风声。
-(breath)
-也许，是你在某个深夜，终于决定重新开始时，那一秒钟的安静。
+native/macos-app/      原生 SwiftUI macOS App
+src/                   Node.js TTS 与旧版辅助工具
+script/                构建和打包脚本
+examples/              示例电台文案
+output/                本地生成音频目录，已被 git 忽略
+macos/                 构建后的 App 输出目录
 ```
 
-建议从这几类方式调：
+## 当前状态
 
-- 停顿：在转场、反问、句尾加 `<#0.5#>` 到 `<#1.2#>`。
-- 语速：情绪、故事类用 `0.86-0.95`；新闻资讯用 `0.98-1.08`。
-- 音高：温柔沉稳可试 `-2` 到 `-1`；活泼节目可试 `1` 到 `2`。
-- 文案：把长句拆短，给重点句单独成行，TTS 的表达会更自然。
+这是一个本地优先的实验性 AI 电台应用，适合用来探索：
 
-## 文件说明
+- AI 电台串场
+- 虚拟主播与 TTS 音色
+- 歌单播放体验
+- 简单双轨混音
+- 歌曲情绪与下一首推荐之间的自然衔接
 
-- `src/minimax-tts.mjs`：生成音频的 CLI。
-- `src/list-voices.mjs`：查询 MiniMax 音色。
-- `examples/radio-script.txt`：电台风格示例文稿。
-- `output/`：生成音频目录，已加入 `.gitignore`。
+项目还不是正式商业产品，也不适合直接上架 App Store。部分能力依赖第三方音乐接口和公共网络服务，不同账号、地区和网络环境下表现可能不同。
+
+## License
+
+License 暂未确定。
