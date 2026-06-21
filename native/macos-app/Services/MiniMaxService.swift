@@ -31,6 +31,7 @@ final class MiniMaxService {
         next: SoulTrack?,
         currentLyricExcerpt: String? = nil,
         nextLyricExcerpt: String? = nil,
+        songStoryInsight: SongStoryInsight? = nil,
         timeAnnouncement: String? = nil
     ) async throws -> GeneratedTransitionScript {
         guard settings.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
@@ -42,6 +43,7 @@ final class MiniMaxService {
             next: next,
             currentLyricExcerpt: currentLyricExcerpt,
             nextLyricExcerpt: nextLyricExcerpt,
+            songStoryInsight: songStoryInsight,
             timeAnnouncement: timeAnnouncement,
             retry: false
         )
@@ -72,6 +74,7 @@ final class MiniMaxService {
                     next: next,
                     currentLyricExcerpt: currentLyricExcerpt,
                     nextLyricExcerpt: nextLyricExcerpt,
+                    songStoryInsight: songStoryInsight,
                     timeAnnouncement: timeAnnouncement,
                     retry: true
                 )]
@@ -89,11 +92,80 @@ final class MiniMaxService {
         return GeneratedTransitionScript(text: enforceTimeAnnouncement(fallbackScript(current: current, next: next), timeAnnouncement: timeAnnouncement), source: .fallback)
     }
 
+    func generateSongStoryInsight(track: SoulTrack, sources: [SongStorySourceCandidate]) async throws -> SongStoryInsight? {
+        guard settings.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+              sources.isEmpty == false else {
+            return nil
+        }
+
+        let sourceText = sources.prefix(4).enumerated().map { index, source in
+            """
+            [\(index + 1)]
+            标题：\(source.title)
+            网址：\(source.url)
+            摘要：\(source.excerpt)
+            """
+        }.joined(separator: "\n\n")
+
+        let payload: [String: Any] = [
+            "model": settings.textModel,
+            "messages": [
+                ["role": "system", "content": "你是音乐资料核验编辑。只基于用户给出的网页片段判断歌曲是否有可信背景故事。禁止编造。只输出 JSON。"],
+                ["role": "user", "content": """
+                歌曲：\(track.artist) - \(track.title)
+
+                网页片段：
+                \(sourceText)
+
+                请判断这些网页片段里是否包含可用于电台串场的可信音乐上下文：歌曲创作背景、发行背景、采访信息、专辑上下文、改编/原唱关系、公开争议信息或广为确认的作品故事。
+
+                如果只是歌词、播放器页面、下载页、营销软文、无来源解读、网友随笔，usable 必须是 false。
+                如果信息不够确定，usable 必须是 false。
+                如果只有基本发行/专辑信息，但来源明确，也可以 usable 为 true，但 summary 要说得克制，不要夸大成创作故事。
+                如果 usable 为 true，summary 用中文概括 1-2 句，angle 写一句可用于电台串场的自然角度。
+
+                只返回 JSON，不要 Markdown：
+                {"usable":true,"confidence":0.82,"summary":"...","angle":"...","sourceIndexes":[1,2]}
+                """]
+            ],
+            "temperature": 0.15,
+            "top_p": 0.8,
+            "max_completion_tokens": 1200
+        ]
+
+        let json = try await postJSON(path: "chat/completions", payload: payload)
+        let raw = extractAssistantText(json)
+        guard let draft = decodeSongStoryDraft(raw), draft.usable, draft.confidence >= 0.72 else {
+            return nil
+        }
+
+        let selectedSources = draft.sourceIndexes
+            .compactMap { index -> SongStorySourceCandidate? in
+                let zeroBased = index - 1
+                guard sources.indices.contains(zeroBased) else { return nil }
+                return sources[zeroBased]
+            }
+        let finalSources = selectedSources.isEmpty ? Array(sources.prefix(2)) : selectedSources
+        let insight = SongStoryInsight(
+            trackID: track.id,
+            title: track.title,
+            artist: track.artist,
+            summary: draft.summary.trimmingCharacters(in: .whitespacesAndNewlines),
+            angle: draft.angle.trimmingCharacters(in: .whitespacesAndNewlines),
+            confidence: min(1, max(0, draft.confidence)),
+            sourceTitles: finalSources.map(\.title),
+            sourceURLs: finalSources.map(\.url),
+            updatedAt: Date()
+        )
+        return insight.isUsable ? insight : nil
+    }
+
     private func transitionPrompt(
         current: SoulTrack,
         next: SoulTrack?,
         currentLyricExcerpt: String?,
         nextLyricExcerpt: String?,
+        songStoryInsight: SongStoryInsight?,
         timeAnnouncement: String?,
         retry: Bool
     ) -> String {
@@ -105,6 +177,7 @@ final class MiniMaxService {
             "请生成一段两首歌之间的自然串场旁白，用来帮助用户更好地听音乐。",
             "可以是情绪类，也可以是正常描述类。",
             "正文完整返回，100 字以内。",
+            "不要编造歌曲背景、歌手经历或发行故事；只有提供了可信背景素材时才可以轻轻带一句。",
             "如果提供了报时提示，必须把报时提示作为第一句话逐字放在正文开头，不要改写，不要用夜色、凌晨、今晚等氛围词替代具体时间。",
             "如果提供了歌词片段，请结合片段理解歌曲情绪和意象，但不要直接引用、复述或改写歌词原文。",
             "只输出最终可播报正文，不要解释，不要 Markdown，不要分行，不要 <think>。"
@@ -126,10 +199,31 @@ final class MiniMaxService {
         if let nextLyricExcerpt, nextLyricExcerpt.isEmpty == false {
             lines.append("下一首歌词片段（清洗后）：\(nextLyricExcerpt)")
         }
+        if let songStoryInsight, songStoryInsight.isUsable {
+            lines.append("""
+            可选歌曲背景素材（已由网页片段核验）：
+            \(songStoryInsight.promptText)
+            使用方式：如果它适合这次串场，可以自然融入一句；不要说“我查到”“资料显示”，不要念来源，不要扩写成百科，不要超过整段的一半。
+            """)
+        }
         if retry {
             lines.append("上一次输出没有最终正文；这次请直接返回完整正文。")
         }
         return lines.joined(separator: "\n")
+    }
+
+    private func decodeSongStoryDraft(_ text: String) -> SongStoryInsightDraft? {
+        let cleaned = text
+            .replacingOccurrences(of: "```json", with: "")
+            .replacingOccurrences(of: "```", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let start = cleaned.firstIndex(of: "{"),
+              let end = cleaned.lastIndex(of: "}") else {
+            return nil
+        }
+        let jsonText = String(cleaned[start...end])
+        guard let data = jsonText.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(SongStoryInsightDraft.self, from: data)
     }
 
     func synthesizeSpeech(
@@ -279,6 +373,31 @@ struct SynthesizedSpeech {
 struct GeneratedTransitionScript {
     let text: String
     let source: GeneratedTransitionScriptSource
+}
+
+private struct SongStoryInsightDraft: Decodable {
+    let usable: Bool
+    let confidence: Double
+    let summary: String
+    let angle: String
+    let sourceIndexes: [Int]
+
+    private enum CodingKeys: String, CodingKey {
+        case usable
+        case confidence
+        case summary
+        case angle
+        case sourceIndexes
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        usable = try container.decode(Bool.self, forKey: .usable)
+        confidence = try container.decode(Double.self, forKey: .confidence)
+        summary = try container.decode(String.self, forKey: .summary)
+        angle = try container.decode(String.self, forKey: .angle)
+        sourceIndexes = (try? container.decode([Int].self, forKey: .sourceIndexes)) ?? []
+    }
 }
 
 enum GeneratedTransitionScriptSource {

@@ -44,6 +44,7 @@ final class SoulDJStore: ObservableObject {
     private let audioEngine: LocalAudioEngine
     private let miniMax: MiniMaxService
     private let environment: EnvironmentContextService
+    private let songStory: SongStoryService
     private var loginPollTask: Task<Void, Never>?
     private var progressPollTask: Task<Void, Never>?
     private var streamFallbackTask: Task<Void, Never>?
@@ -52,17 +53,24 @@ final class SoulDJStore: ObservableObject {
     private var preparedTransition: PreparedTransition?
     private var transitionTask: Task<Void, Never>?
     private var lastTimeAnnouncementAt: Date?
+    private var unavailableTrackIDs = Set<String>()
+    private var storyLookupAttemptedTrackIDs = Set<String>()
+    private var generatedTransitionCount = 0
+    private var lastStoryTransitionCount = -10
+    private var finishFallbackTrackKey: String?
     private let defaults = UserDefaults.standard
-    private let playbackQualities = ["exhigh", "standard", "lossless", "hires"]
+    private let playbackQualities = ["standard", "exhigh", "higher", "lossless", "hires"]
     private let publicPlaylistCategories = ["华语", "流行", "民谣", "摇滚", "电子", "轻音乐"]
+    private let storyTransitionCooldown = 2
     private var publicPlaylistPage = 0
 
-    init(settings: AppSettingsStore, netease: NeteaseService, audioEngine: LocalAudioEngine, miniMax: MiniMaxService, environment: EnvironmentContextService) {
+    init(settings: AppSettingsStore, netease: NeteaseService, audioEngine: LocalAudioEngine, miniMax: MiniMaxService, environment: EnvironmentContextService, songStory: SongStoryService) {
         self.settings = settings
         self.netease = netease
         self.audioEngine = audioEngine
         self.miniMax = miniMax
         self.environment = environment
+        self.songStory = songStory
         self.playbackMode = PlaybackMode(rawValue: defaults.string(forKey: Keys.playbackMode) ?? "") ?? .ordered
         self.volume = defaults.object(forKey: Keys.volume) as? Double ?? 0.82
         qrLogin.hasCookie = netease.hasCookie
@@ -325,9 +333,11 @@ final class SoulDJStore: ObservableObject {
     func playTrack(_ track: SoulTrack) {
         cancelPreparedAiDjTransition()
         streamFallbackTask?.cancel()
+        unavailableTrackIDs.remove(track.id)
         selectedTrackID = track.id
         let requestID = UUID()
         playbackRequestID = requestID
+        finishFallbackTrackKey = nil
         isPreparingPlayback = true
         preparingTrackID = track.id
         downloadStatus = "正在准备 \(track.title)..."
@@ -358,7 +368,9 @@ final class SoulDJStore: ObservableObject {
             } catch {
                 await MainActor.run {
                     guard self.playbackRequestID == requestID else { return }
+                    self.markTrackUnavailable(track, reason: error.localizedDescription)
                     self.handlePlaybackError(error)
+                    Task { await self.playNextAvailableTrack(manual: false) }
                 }
             }
         }
@@ -376,6 +388,7 @@ final class SoulDJStore: ObservableObject {
                 volume: Float(volume)
             )
             currentTrack = playableTrack
+            finishFallbackTrackKey = nil
             applyAudioStatus(status)
             isPlaying = true
             isPreparingPlayback = false
@@ -401,6 +414,7 @@ final class SoulDJStore: ObservableObject {
                 volume: Float(volume)
             )
             currentTrack = streamingTrack
+            finishFallbackTrackKey = nil
             applyAudioStatus(status)
             isPlaying = true
             isPreparingPlayback = false
@@ -557,13 +571,7 @@ final class SoulDJStore: ObservableObject {
     func next() {
         cancelPreparedAiDjTransition()
         streamFallbackTask?.cancel()
-        guard let track = nextTrackCandidate(manual: true) else {
-            isPlaying = false
-            elapsed = duration
-            appendLog("info", "已经到达歌单末尾。")
-            return
-        }
-        playTrack(track)
+        Task { await playNextAvailableTrack(manual: true) }
     }
 
     func cyclePlaybackMode() {
@@ -634,6 +642,8 @@ final class SoulDJStore: ObservableObject {
         do {
             let tracks = try await netease.loadPlaylistTracks(id: playlist.id, preferCache: preferCache)
                 if selectedPlaylist?.id == playlist.id {
+                unavailableTrackIDs.removeAll()
+                storyLookupAttemptedTrackIDs.removeAll()
                 selectedTracks = tracks
                 trackPage = min(trackPage, max(0, totalTrackPages - 1))
                 if currentTrack.id == SoulTrack.placeholder.id {
@@ -691,15 +701,10 @@ final class SoulDJStore: ObservableObject {
             appendLog("info", "歌曲结束事件已由串场淡入接管。")
             return
         }
+        finishFallbackTrackKey = currentPlaybackFinishKey()
         elapsed = duration
         isPlaying = false
-        if let track = nextTrackCandidate(manual: false) {
-            appendLog("info", "歌曲播放结束，自动切到下一首。")
-            playTrack(track)
-        } else {
-            downloadStatus = "播放完成"
-            appendLog("info", "顺序播放已到达歌单末尾。")
-        }
+        Task { await playNextAvailableTrack(manual: false) }
     }
 
     private func startProgressPolling() {
@@ -712,6 +717,7 @@ final class SoulDJStore: ObservableObject {
                 await MainActor.run {
                     self.applyAudioStatus(status)
                     self.tickPreparedTransition()
+                    self.handlePlaybackFinishFallbackIfNeeded()
                 }
             }
         }
@@ -737,8 +743,8 @@ final class SoulDJStore: ObservableObject {
             return
         }
 
-        let key = "\(currentTrack.id)->\(nextTrack.id)"
-        if !force, preparedTransition?.key == key { return }
+        let requestedKey = "\(currentTrack.id)->\(nextTrack.id)"
+        if !force, preparedTransition?.key == requestedKey { return }
         transitionTask?.cancel()
         preparedTransition = nil
         audioEngine.cancelPreparedBridge()
@@ -747,24 +753,49 @@ final class SoulDJStore: ObservableObject {
         let current = currentTrack
         let next = nextTrack
         let currentDuration = duration > 0 ? duration : current.duration
-        appendLog("info", "提前准备串场：\(current.title) -> \(next.title)")
+        appendLog("info", "提前检查下一首可播性并准备串场：\(current.title) -> \(next.title)")
+        appendLog("info", "歌曲背景故事模块：等待下一首可播确认后评估。")
 
         transitionTask = Task { [weak self] in
             guard let self else { return }
             do {
+                guard let playableNext = try await self.resolveNextPlayableTrackAndURL(manual: true, maxCandidates: 3) else {
+                    await MainActor.run {
+                        guard self.currentTrack.id == current.id else { return }
+                        self.aiDjTransitionSummary = "\(current.title) · 没有可播放的下一首"
+                        self.appendLog("info", "未找到可播放的下一首，已跳过串场准备。")
+                    }
+                    return
+                }
+                let next = playableNext.track
+                let nextAudioURL = playableNext.audioURL
+                let key = "\(current.id)->\(next.id)"
+                await MainActor.run {
+                    guard self.currentTrack.id == current.id else { return }
+                    self.nextTrack = next
+                    self.aiDjTransitionSummary = "\(current.title) -> \(next.title) · 下一首可播放，生成文案中"
+                    self.appendLog("info", "下一首可播放确认：\(next.artist) - \(next.title)。")
+                }
+
                 async let currentLyricExcerpt = self.safeLyricExcerpt(for: current)
                 async let nextLyricExcerpt = self.safeLyricExcerpt(for: next)
+                async let optionalStoryInsight = self.songStoryInsightForTransition(for: current)
                 let lyricExcerpts = await (currentLyricExcerpt, nextLyricExcerpt)
+                let storyInsight = await optionalStoryInsight
                 await MainActor.run {
                     let currentText = lyricExcerpts.0 == nil ? "当前歌无歌词片段" : "当前歌歌词片段已加入 prompt"
                     let nextText = lyricExcerpts.1 == nil ? "下一首无歌词片段" : "下一首歌词片段已加入 prompt"
                     self.appendLog("info", "\(currentText)，\(nextText)。")
+                    if let storyInsight {
+                        self.appendLog("info", "歌曲背景素材已加入 prompt：\(storyInsight.title)。")
+                    }
                 }
                 let generated = try await self.miniMax.generateTransitionScript(
                     current: current,
                     next: next,
                     currentLyricExcerpt: lyricExcerpts.0,
                     nextLyricExcerpt: lyricExcerpts.1,
+                    songStoryInsight: storyInsight,
                     timeAnnouncement: self.beijingTimeAnnouncementIfNeeded()
                 )
                 let script = generated.text
@@ -773,7 +804,6 @@ final class SoulDJStore: ObservableObject {
                     self.appendLog("script", "串场文案已缓存（\(generated.source.logLabel)）：\(script)")
                 }
                 let speech = try await self.miniMax.synthesizeSpeech(script)
-                let nextAudioURL = try await self.resolveBridgeAudioURL(for: next)
                 let ttsDuration = Double(speech.durationMs ?? 8000) / 1000
                 let duckLead = 1.5
                 let crossfadeOverlap = 1.8
@@ -808,6 +838,10 @@ final class SoulDJStore: ObservableObject {
                         ttsPlayed: false,
                         crossfadeStarted: false
                     )
+                    self.generatedTransitionCount += 1
+                    if storyInsight != nil {
+                        self.lastStoryTransitionCount = self.generatedTransitionCount
+                    }
                     self.aiDjTransitionSummary = "\(current.title) -> \(next.title) · 口播 \(self.formatTime(ttsStart)) · 淡入 \(self.formatTime(nextStart))"
                     self.aiHostMessage = script
                     self.appendLog("tts", "串场音频已缓存：\(URL(fileURLWithPath: speech.path).lastPathComponent)，时长 \(String(format: "%.1f", ttsDuration)) 秒。")
@@ -828,6 +862,47 @@ final class SoulDJStore: ObservableObject {
             await MainActor.run {
                 self.appendLog("info", "歌词片段读取失败，继续无歌词串场：\(track.title)。")
             }
+            return nil
+        }
+    }
+
+    private func songStoryInsightForTransition(for track: SoulTrack) async -> SongStoryInsight? {
+        appendLog("info", "歌曲背景故事模块：评估 \(track.artist) - \(track.title)。")
+        let transitionsSinceStory = generatedTransitionCount - lastStoryTransitionCount
+        if transitionsSinceStory < storyTransitionCooldown {
+            let remaining = storyTransitionCooldown - transitionsSinceStory
+            appendLog("info", "歌曲背景故事低频保护：上次使用后还差 \(remaining) 次串场再尝试。")
+            return nil
+        }
+        if let cached = songStory.cachedInsight(for: track) {
+            appendLog("info", "命中歌曲背景缓存：\(track.title)。")
+            return cached
+        }
+        guard storyLookupAttemptedTrackIDs.insert(track.id).inserted else {
+            appendLog("info", "这首歌本次运行已查过背景故事，避免重复联网：\(track.title)。")
+            return nil
+        }
+
+        do {
+            appendLog("info", "正在查找歌曲背景故事：\(track.artist) - \(track.title)。")
+            let queries = songStory.storyQueries(for: track)
+            appendLog("info", "歌曲背景搜索词：\(queries.prefix(2).joined(separator: " / "))")
+            let sources = try await songStory.fetchSourceCandidates(for: track)
+            appendLog("info", "歌曲背景候选素材：\(sources.count) 条。")
+            guard sources.isEmpty == false else {
+                appendLog("info", "没有找到可用歌曲背景素材：\(track.title)。")
+                return nil
+            }
+            let insight = try await miniMax.generateSongStoryInsight(track: track, sources: sources)
+            guard let insight else {
+                appendLog("info", "网页素材核验未通过，已放弃背景故事串场：\(track.title)。")
+                return nil
+            }
+            try? songStory.saveInsight(insight, for: track)
+            appendLog("info", "歌曲背景故事已缓存：\(track.title) · \(insight.angle)")
+            return insight
+        } catch {
+            appendLog("info", "歌曲背景故事查找失败，继续普通串场：\(error.localizedDescription)")
             return nil
         }
     }
@@ -938,6 +1013,7 @@ final class SoulDJStore: ObservableObject {
         let promotedTrack = transition.to.withLocalPath(transition.nextAudioURL.absoluteString)
         currentTrack = promotedTrack
         selectedTrackID = promotedTrack.id
+        finishFallbackTrackKey = nil
         elapsed = 0
         duration = promotedTrack.duration
         isPlaying = true
@@ -959,6 +1035,9 @@ final class SoulDJStore: ObservableObject {
         if let cachedURL = cachedPlayableAudio(for: track) {
             return cachedURL
         }
+        if unavailableTrackIDs.contains(track.id) {
+            throw NeteaseServiceError.message("歌曲已标记为不可播放：\(track.artist) - \(track.title)。")
+        }
         let stream = try await resolvePlayableStream(for: track)
         Task.detached(priority: .utility) { [netease] in
             _ = try? await netease.cacheAudio(from: stream)
@@ -976,6 +1055,10 @@ final class SoulDJStore: ObservableObject {
     }
 
     private func resolvePlayableStream(for track: SoulTrack) async throws -> NeteaseAudioStream {
+        if unavailableTrackIDs.contains(track.id) {
+            throw NeteaseServiceError.message("歌曲已标记为不可播放：\(track.artist) - \(track.title)。")
+        }
+
         var errors: [String] = []
         for quality in playbackQualities {
             do {
@@ -988,7 +1071,52 @@ final class SoulDJStore: ObservableObject {
                 errors.append("\(quality): \(error.localizedDescription)")
             }
         }
-        throw NeteaseServiceError.message("没有拿到歌曲音频地址：\(track.artist) - \(track.title)。可能是版权受限或该曲源不可用。")
+        let detail = errors.prefix(3).joined(separator: "；")
+        throw NeteaseServiceError.message("没有拿到歌曲音频地址：\(track.artist) - \(track.title)。\(detail.isEmpty ? "可能是版权受限或该曲源不可用。" : detail)")
+    }
+
+    private func resolveNextPlayableTrackAndURL(manual: Bool, maxCandidates: Int? = nil) async throws -> (track: SoulTrack, audioURL: URL)? {
+        let allCandidates = nextTrackCandidates(manual: manual)
+        let candidates = maxCandidates.map { Array(allCandidates.prefix($0)) } ?? allCandidates
+        guard candidates.isEmpty == false else { return nil }
+
+        for candidate in candidates {
+            do {
+                let audioURL = try await resolveBridgeAudioURL(for: candidate)
+                nextTrack = candidate
+                return (candidate, audioURL)
+            } catch {
+                markTrackUnavailable(candidate, reason: error.localizedDescription)
+            }
+        }
+        updateNextTrack()
+        return nil
+    }
+
+    private func playNextAvailableTrack(manual: Bool) async {
+        do {
+            guard let playableNext = try await resolveNextPlayableTrackAndURL(manual: manual) else {
+                isPlaying = false
+                elapsed = duration
+                downloadStatus = manual ? "已经到达歌单末尾" : "播放完成"
+                appendLog("info", manual ? "已经到达歌单末尾或没有可播放歌曲。" : "没有可播放的下一首，播放已结束。")
+                return
+            }
+            appendLog("info", manual ? "切到下一首：\(playableNext.track.title)。" : "歌曲播放结束，自动切到下一首：\(playableNext.track.title)。")
+            playTrack(playableNext.track)
+        } catch {
+            appendLog("error", "查找下一首可播放歌曲失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func markTrackUnavailable(_ track: SoulTrack, reason: String) {
+        let inserted = unavailableTrackIDs.insert(track.id).inserted
+        if nextTrack?.id == track.id {
+            updateNextTrack()
+        }
+        if inserted {
+            appendLog("error", "已跳过不可播放歌曲：\(track.artist) - \(track.title)。\(reason)")
+        }
     }
 
     private func cancelPreparedAiDjTransition() {
@@ -1004,23 +1132,65 @@ final class SoulDJStore: ObservableObject {
     }
 
     private func nextTrackCandidate(manual: Bool) -> SoulTrack? {
-        guard selectedTracks.isEmpty == false else { return nil }
-        guard let index = currentTrackIndex() else { return selectedTracks.first }
+        nextTrackCandidates(manual: manual).first
+    }
+
+    private func nextTrackCandidates(manual: Bool) -> [SoulTrack] {
+        guard selectedTracks.isEmpty == false else { return [] }
+        func isAvailable(_ track: SoulTrack) -> Bool {
+            unavailableTrackIDs.contains(track.id) == false
+        }
+        guard let index = currentTrackIndex() else {
+            return selectedTracks.filter(isAvailable)
+        }
 
         switch playbackMode {
         case .repeatOne where manual == false:
-            return selectedTracks[index]
+            let current = selectedTracks[index]
+            return isAvailable(current) ? [current] : []
         case .shuffle:
-            guard selectedTracks.count > 1 else { return manual || playbackMode != .ordered ? selectedTracks.first : nil }
-            let candidates = selectedTracks.filter { $0.id != currentTrack.id }
-            return candidates.randomElement()
+            guard selectedTracks.count > 1 else {
+                return selectedTracks.filter(isAvailable)
+            }
+            let candidates = selectedTracks.filter { $0.id != currentTrack.id && isAvailable($0) }
+            return candidates.shuffled()
         case .repeatAll:
-            return selectedTracks[(index + 1) % selectedTracks.count]
+            guard selectedTracks.count > 1 else {
+                let current = selectedTracks[index]
+                return isAvailable(current) ? [current] : []
+            }
+            var candidates: [SoulTrack] = []
+            for offset in 1...selectedTracks.count {
+                let candidate = selectedTracks[(index + offset) % selectedTracks.count]
+                if candidate.id != currentTrack.id, isAvailable(candidate) {
+                    candidates.append(candidate)
+                }
+            }
+            return candidates
         case .ordered, .repeatOne:
             let nextIndex = index + 1
-            guard selectedTracks.indices.contains(nextIndex) else { return nil }
-            return selectedTracks[nextIndex]
+            guard selectedTracks.indices.contains(nextIndex) else { return [] }
+            return selectedTracks[nextIndex..<selectedTracks.count].filter(isAvailable)
         }
+    }
+
+    private func handlePlaybackFinishFallbackIfNeeded() {
+        guard isPlaying,
+              isPreparingPlayback == false,
+              currentTrack.id != SoulTrack.placeholder.id,
+              duration > 0,
+              elapsed >= max(0, duration - 0.35) else {
+            return
+        }
+        let key = currentPlaybackFinishKey()
+        guard finishFallbackTrackKey != key else { return }
+        finishFallbackTrackKey = key
+        appendLog("info", "检测到歌曲已到结尾，执行自动下一首兜底检查。")
+        handleMusicFinished()
+    }
+
+    private func currentPlaybackFinishKey() -> String {
+        "\(currentTrack.id)|\(currentTrack.localPath)"
     }
 
     private func previousTrackCandidate() -> SoulTrack? {

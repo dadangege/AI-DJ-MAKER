@@ -19,7 +19,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let netease = NeteaseService(projectDir: projectDir)
         let miniMax = MiniMaxService(settings: settings)
         let environment = EnvironmentContextService()
-        let store = SoulDJStore(settings: settings, netease: netease, audioEngine: audioEngine, miniMax: miniMax, environment: environment)
+        let songStory = SongStoryService(settings: settings)
+        let store = SoulDJStore(settings: settings, netease: netease, audioEngine: audioEngine, miniMax: miniMax, environment: environment, songStory: songStory)
         self.store = store
 
         createWindow(store: store)

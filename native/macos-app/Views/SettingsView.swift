@@ -43,10 +43,14 @@ struct SettingsView: View {
                         }
 
                         SettingsSection(title: "Advanced Tools", subtitle: "旧 TTS 试听和系统监听模式会作为工具入口保留。", symbol: "wrench.and.screwdriver.fill", accent: SoulTheme.primaryContainer) {
-                            HStack(spacing: 12) {
-                                ToolChip(title: "Manual TTS", symbol: "waveform")
-                                ToolChip(title: "Now Playing Monitor", symbol: "dot.radiowaves.left.and.right")
-                                ToolChip(title: "System Ducking", symbol: "speaker.wave.2.fill")
+                            VStack(alignment: .leading, spacing: 16) {
+                                SoulTextField(title: "Tavily API Key", text: $settings.tavilyAPIKey, secure: true)
+                                HStack(spacing: 12) {
+                                    ToolChip(title: "Manual TTS", symbol: "waveform")
+                                    ToolChip(title: "Now Playing Monitor", symbol: "dot.radiowaves.left.and.right")
+                                    ToolChip(title: "System Ducking", symbol: "speaker.wave.2.fill")
+                                    ToolChip(title: "Song Story Search", symbol: "magnifyingglass")
+                                }
                             }
                         }
 

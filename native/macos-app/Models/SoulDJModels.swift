@@ -173,6 +173,42 @@ struct TimedLyricLine: Identifiable, Equatable {
     let text: String
 }
 
+struct SongStorySourceCandidate: Equatable, Codable {
+    let title: String
+    let url: String
+    let excerpt: String
+    let site: String
+    let qualityScore: Double
+}
+
+struct SongStoryInsight: Equatable, Codable {
+    let trackID: String
+    let title: String
+    let artist: String
+    let summary: String
+    let angle: String
+    let confidence: Double
+    let sourceTitles: [String]
+    let sourceURLs: [String]
+    let updatedAt: Date
+
+    var isUsable: Bool {
+        confidence >= 0.72
+            && summary.trimmingCharacters(in: .whitespacesAndNewlines).count >= 20
+            && angle.trimmingCharacters(in: .whitespacesAndNewlines).count >= 8
+            && sourceURLs.isEmpty == false
+    }
+
+    var promptText: String {
+        [
+            "可信度：\(String(format: "%.2f", confidence))",
+            "摘要：\(summary)",
+            "可用串场角度：\(angle)",
+            "来源标题：\(sourceTitles.prefix(3).joined(separator: "；"))"
+        ].joined(separator: "\n")
+    }
+}
+
 enum AIHostMode: String, CaseIterable, Codable, Identifiable {
     case dj
     case midnight

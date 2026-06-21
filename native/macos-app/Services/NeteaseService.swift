@@ -226,7 +226,8 @@ final class NeteaseService: @unchecked Sendable {
         let payload = try await songURLPayload(for: track, quality: quality, cookies: cookies)
         guard let audioURLString = findFirstURL(in: payload),
               let remoteURL = URL(string: audioURLString) else {
-            throw NeteaseServiceError.message("没有拿到歌曲音频地址：\(track.artist) - \(track.title)。")
+            let reason = audioPayloadFailureReason(payload)
+            throw NeteaseServiceError.message("没有拿到歌曲音频地址：\(track.artist) - \(track.title)。\(reason)")
         }
 
         let ext = remoteURL.pathExtension.isEmpty ? "mp3" : remoteURL.pathExtension
@@ -698,6 +699,23 @@ final class NeteaseService: @unchecked Sendable {
             }
         }
         return nil
+    }
+
+    private func audioPayloadFailureReason(_ payload: [String: Any]) -> String {
+        let data = payload["data"] as? [[String: Any]] ?? []
+        let first = data.first ?? [:]
+        let code = first["code"] ?? payload["code"] ?? "unknown"
+        let fee = first["fee"] ?? "unknown"
+        let level = first["level"] ?? first["plLevel"] ?? "unknown"
+        let type = first["type"] ?? "unknown"
+        let flag = first["flag"] ?? "unknown"
+        let message = first["message"] as? String
+            ?? payload["message"] as? String
+            ?? payload["msg"] as? String
+            ?? ""
+        let freeTrial = first["freeTrialInfo"] != nil ? "有试听信息" : "无试听信息"
+        let detail = "接口 code=\(code)，fee=\(fee)，level=\(level)，type=\(type)，flag=\(flag)，\(freeTrial)"
+        return message.isEmpty ? detail : "\(detail)，message=\(message)"
     }
 
     private func findExistingAudio(in directory: URL, baseName: String) -> URL? {
